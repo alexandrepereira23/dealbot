@@ -1,0 +1,15 @@
+[Unit]
+Description=Dealbot - monitor de promocoes
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/dealbot/bot
+ExecStart=/home/ubuntu/dealbot/bot/venv/bin/python -m src.main
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/ubuntu/dealbot/bot/.env
+
+[Install]
+WantedBy=multi-user.target
