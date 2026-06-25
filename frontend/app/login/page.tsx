@@ -15,13 +15,11 @@ export default function LoginPage() {
     e.preventDefault();
     setErro("");
     setCarregando(true);
-
     try {
       const { error } =
         modo === "login"
           ? await supabase.auth.signInWithPassword({ email, password: senha })
           : await supabase.auth.signUp({ email, password: senha });
-
       if (error) {
         setErro(error.message);
       } else {
