@@ -1,4 +1,10 @@
+import unicodedata
 from .db import supabase
+
+
+def _normalizar(texto: str) -> str:
+    """Remove acentos e converte para minúsculo para comparação."""
+    return unicodedata.normalize("NFD", texto.lower()).encode("ascii", "ignore").decode()
 
 
 def carregar_filtros() -> list[dict]:
@@ -11,18 +17,29 @@ def passa_no_filtro(produto: dict, filtros: list[dict]) -> bool:
     if not filtros:
         return True
 
-    titulo = (produto.get("titulo") or "").lower()
+    titulo = _normalizar(produto.get("titulo") or "")
+    categoria = produto.get("categoria") or ""
     preco = produto.get("preco") or 0
 
     for f in filtros:
-        if any(b.lower() in titulo for b in (f.get("palavras_bloqueio") or [])):
+        # Bloqueio — qualquer palavra bloqueia
+        bloqueios = [_normalizar(b) for b in (f.get("palavras_bloqueio") or [])]
+        if any(b in titulo for b in bloqueios):
             continue
-        if f.get("categoria") and f["categoria"] != produto.get("categoria"):
+
+        # Categoria — se definida, precisa bater
+        if f.get("categoria") and f["categoria"] != categoria:
             continue
+
+        # Preço máximo
         if f.get("preco_max") and preco > float(f["preco_max"]):
             continue
-        chaves = f.get("palavras_chave") or []
-        if chaves and not any(c.lower() in titulo for c in chaves):
+
+        # Palavras-chave — se definidas, ao menos uma precisa estar no título
+        chaves = [_normalizar(c) for c in (f.get("palavras_chave") or [])]
+        if chaves and not any(c in titulo for c in chaves):
             continue
+
         return True
+
     return False

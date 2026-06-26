@@ -1,6 +1,5 @@
 """
 DEALBOT - Bot de monitoramento de promoções (modo live / persistente)
-Rode num VPS (ex: Oracle Cloud Free Tier) com systemd ou pm2.
 """
 import asyncio
 from telethon import TelegramClient, events
@@ -26,6 +25,7 @@ async def processar(msg, canal: str, filtros: list[dict]):
     produto = await extrair_produto(texto)
     if not produto:
         return
+
     if not passa_no_filtro(produto, filtros):
         print(f"[filtro] descartado: {produto.get('titulo')}")
         return
@@ -47,6 +47,13 @@ async def processar(msg, canal: str, filtros: list[dict]):
         print(f"[ok] salvo: {registro['titulo']}")
 
 
+async def handler(event):
+    """Processa cada mensagem em task separada — não bloqueia as próximas."""
+    filtros = carregar_filtros()
+    canal = getattr(event.chat, "username", None) or str(event.chat_id)
+    asyncio.create_task(processar(event.message, canal, filtros))
+
+
 async def main():
     await client.start()
 
@@ -57,12 +64,7 @@ async def main():
 
     print(f"[live] monitorando: {canais}")
 
-    @client.on(events.NewMessage(chats=canais))
-    async def handler(event):
-        filtros = carregar_filtros()
-        canal = event.chat.username or str(event.chat_id)
-        await processar(event.message, canal, filtros)
-
+    client.add_event_handler(handler, events.NewMessage(chats=canais))
     await client.run_until_disconnected()
 
 
