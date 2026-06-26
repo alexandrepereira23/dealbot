@@ -1,9 +1,9 @@
 # Dealbot
 
 Aplicação web de promoções. Um bot Python captura ofertas de canais do
-Telegram, estrutura com o Gemini e salva no Supabase. Uma API MVC em Node serve
-os dados, e um frontend Next.js exibe tudo com login, filtros por categoria e
-edição das regras de captura.
+Telegram, estrutura os dados por regex/heurística e salva no Supabase. Uma API
+MVC em Node serve os dados, e um frontend Next.js exibe tudo com login, filtros
+por categoria e edição das regras de captura.
 
 ```
 Telegram → Bot Python (VPS) → Supabase → API MVC (Node) → Next.js (Vercel)
@@ -31,7 +31,7 @@ dealbot/
 │   ├── src/
 │   │   ├── config.py            # variáveis de ambiente
 │   │   ├── db.py                # cliente Supabase
-│   │   ├── extractor.py         # estrutura texto via Gemini
+│   │   ├── extractor.py         # estrutura texto via regex/heurística
 │   │   ├── filters.py           # aplica as regras cadastradas
 │   │   ├── repository.py        # storage de fotos + gravação
 │   │   └── main.py              # loop de eventos do Telethon
@@ -123,6 +123,8 @@ PUT    /api/canais/:id
 DELETE /api/canais/:id
 ```
 
-## Nota sobre o Gemini
-O bot usa `gemini-1.5-flash`. Confira no painel do Google AI Studio se há
-versão mais recente disponível antes de subir em produção.
+## Extração de produtos
+O `bot/src/extractor.py` estrutura cada mensagem por regex/heurística (preço,
+cupom, link, categoria por palavras-chave). Não há dependência de IA nem chave
+externa. As categorias suportadas estão fixas em `extractor.py` e em
+`frontend/lib/types.ts` (`CATEGORIAS`) — mantenha as duas em sincronia.

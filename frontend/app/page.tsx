@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
-import { Produto } from "@/lib/types";
+import { Produto, CATEGORIA_LABELS } from "@/lib/types";
 import { Header } from "@/components/Header";
 import { FiltroCategorias } from "@/components/FiltroCategorias";
 import { ProdutoCard } from "@/components/ProdutoCard";
@@ -41,69 +41,38 @@ export default function Home() {
 
   if (authCarregando) {
     return (
-      <main style={wrap}>
-        <p style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 13 }}>
-          verificando sessão...
-        </p>
+      <main className="container">
+        <p className="state-loading">Verificando sessão…</p>
       </main>
     );
   }
 
   return (
-    <main style={wrap}>
+    <main className="container">
       <Header email={email} onSair={sair} />
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
-          gap: 12,
-          marginBottom: 24,
-        }}
-      >
-        <Metrica rotulo="total" valor={stats?.total ?? 0} />
-        <Metrica rotulo="eletronicos" valor={stats?.porCategoria?.eletronicos ?? 0} />
-        <Metrica rotulo="casa" valor={stats?.porCategoria?.casa ?? 0} />
-        <Metrica rotulo="moda" valor={stats?.porCategoria?.moda ?? 0} />
+      <div className="metrics">
+        <Metrica rotulo="Total" valor={stats?.total ?? 0} />
+        <Metrica rotulo={CATEGORIA_LABELS.eletronicos} valor={stats?.porCategoria?.eletronicos ?? 0} />
+        <Metrica rotulo={CATEGORIA_LABELS.casa} valor={stats?.porCategoria?.casa ?? 0} />
+        <Metrica rotulo={CATEGORIA_LABELS.moda} valor={stats?.porCategoria?.moda ?? 0} />
       </div>
 
-      <div style={{ marginBottom: 24 }}>
-        <FiltroCategorias ativo={categoria} onChange={setCategoria} />
-      </div>
+      <FiltroCategorias ativo={categoria} onChange={setCategoria} />
 
-      {erro && (
-        <p style={{ color: "#e85d5d", fontSize: 13, marginBottom: 16 }}>{erro}</p>
-      )}
+      {erro && <p className="error-text" style={{ marginBottom: 16 }}>{erro}</p>}
 
       {carregando ? (
-        <p style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 13 }}>
-          carregando ofertas...
-        </p>
+        <p className="state-loading">Carregando ofertas…</p>
       ) : produtos.length === 0 ? (
-        <div
-          style={{
-            border: "1px dashed var(--border)",
-            borderRadius: "var(--radius)",
-            padding: "48px 24px",
-            textAlign: "center",
-            color: "var(--text-dim)",
-          }}
-        >
-          <p style={{ fontFamily: "var(--mono)", fontSize: 14, marginBottom: 6 }}>
-            nenhuma oferta ainda
-          </p>
-          <p style={{ fontSize: 13 }}>
-            O bot grava aqui assim que captar promoções nos canais monitorados.
+        <div className="empty">
+          <p className="empty__title">Nenhuma oferta ainda</p>
+          <p className="empty__body">
+            O bot registra aqui assim que capturar promoções nos canais monitorados.
           </p>
         </div>
       ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-            gap: 16,
-          }}
-        >
+        <div className="grid-produtos">
           {produtos.map((p) => (
             <ProdutoCard key={p.id} produto={p} />
           ))}
@@ -115,35 +84,9 @@ export default function Home() {
 
 function Metrica({ rotulo, valor }: { rotulo: string; valor: number }) {
   return (
-    <div
-      style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius)",
-        padding: "14px 16px",
-      }}
-    >
-      <div
-        style={{
-          fontFamily: "var(--mono)",
-          fontSize: 10,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--text-dim)",
-          marginBottom: 6,
-        }}
-      >
-        {rotulo}
-      </div>
-      <div style={{ fontFamily: "var(--mono)", fontSize: 24, fontWeight: 700 }}>
-        {valor}
-      </div>
+    <div className="metric">
+      <div className="metric__label">{rotulo}</div>
+      <div className="metric__value">{valor}</div>
     </div>
   );
 }
-
-const wrap: React.CSSProperties = {
-  maxWidth: 1100,
-  margin: "0 auto",
-  padding: "0 24px 48px",
-};

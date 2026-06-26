@@ -26,129 +26,70 @@ export default function LoginPage() {
         router.replace("/");
       }
     } catch {
-      setErro("Falha ao conectar");
+      setErro("Falha ao conectar. Tente novamente.");
     } finally {
       setCarregando(false);
     }
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center",
-        padding: 24,
-      }}
-    >
-      <form
-        onSubmit={handleSubmit}
-        style={{
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--radius)",
-          padding: 32,
-          width: "100%",
-          maxWidth: 360,
-          display: "flex",
-          flexDirection: "column",
-          gap: 14,
-        }}
-      >
-        <h1
-          style={{
-            fontFamily: "var(--mono)",
-            fontWeight: 700,
-            fontSize: 18,
-            color: "var(--accent)",
-            marginBottom: 8,
-          }}
-        >
-          ▸ dealbot
-        </h1>
+    <main className="center-screen">
+      <form onSubmit={handleSubmit} className="auth-card">
+        <div>
+          <p className="auth-card__brand">▸ Dealbot</p>
+          <p className="auth-card__subtitle">
+            {modo === "login" ? "Acesse seu painel" : "Crie sua conta"}
+          </p>
+        </div>
 
-        <label style={labelStyle}>email</label>
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="voce@email.com"
-          required
-          style={inputStyle}
-        />
+        <div className="field">
+          <label className="label" htmlFor="email">E-mail</label>
+          <input
+            id="email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="voce@email.com"
+            required
+            className="input"
+          />
+        </div>
 
-        <label style={labelStyle}>senha</label>
-        <input
-          type="password"
-          value={senha}
-          onChange={(e) => setSenha(e.target.value)}
-          placeholder="••••••••"
-          required
-          minLength={6}
-          style={inputStyle}
-        />
+        <div className="field">
+          <label className="label" htmlFor="senha">Senha</label>
+          <input
+            id="senha"
+            type="password"
+            value={senha}
+            onChange={(e) => setSenha(e.target.value)}
+            placeholder="••••••••"
+            required
+            minLength={6}
+            className="input"
+          />
+        </div>
 
-        {erro && (
-          <p style={{ color: "#e85d5d", fontSize: 13 }}>{erro}</p>
-        )}
+        {erro && <p className="error-text">{erro}</p>}
 
         <button
           type="submit"
           disabled={carregando}
-          style={{
-            padding: 10,
-            background: "var(--accent)",
-            color: "#1a1205",
-            border: "none",
-            borderRadius: 8,
-            fontWeight: 600,
-            fontSize: 13,
-            opacity: carregando ? 0.6 : 1,
-            cursor: "pointer",
-          }}
+          className="btn btn-primary btn-block"
         >
-          {carregando
-            ? "entrando..."
-            : modo === "login"
-              ? "entrar"
-              : "criar conta"}
+          {carregando ? "Entrando…" : modo === "login" ? "Entrar" : "Criar conta"}
         </button>
 
         <button
           type="button"
           onClick={() => setModo(modo === "login" ? "cadastro" : "login")}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "var(--text-dim)",
-            fontSize: 12,
-            fontFamily: "var(--mono)",
-            cursor: "pointer",
-          }}
+          className="btn-link btn-block"
+          style={{ textAlign: "center" }}
         >
           {modo === "login"
-            ? "nao tem conta? criar"
-            : "ja tem conta? entrar"}
+            ? "Não tem conta? Criar uma"
+            : "Já tem conta? Entrar"}
         </button>
       </form>
     </main>
   );
 }
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 11,
-  color: "var(--text-dim)",
-  fontFamily: "var(--mono)",
-  marginBottom: 4,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "9px 11px",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  color: "var(--text)",
-  fontSize: 13,
-};

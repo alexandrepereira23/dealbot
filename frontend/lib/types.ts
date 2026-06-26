@@ -31,3 +31,14 @@ export const CATEGORIAS = [
   "games",
   "outros",
 ] as const;
+
+export const CATEGORIA_LABELS: Record<string, string> = {
+  todos: "Todas",
+  eletronicos: "Eletrônicos",
+  casa: "Casa",
+  moda: "Moda",
+  alimentos: "Alimentos",
+  beleza: "Beleza",
+  games: "Games",
+  outros: "Outros",
+};

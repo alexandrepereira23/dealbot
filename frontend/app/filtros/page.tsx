@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
-import { Filtro, CATEGORIAS } from "@/lib/types";
+import { Filtro, CATEGORIAS, CATEGORIA_LABELS } from "@/lib/types";
 import { Header } from "@/components/Header";
 
 type FormState = {
@@ -46,16 +46,13 @@ export default function FiltrosPage() {
   }, [authCarregando, carregar]);
 
   function paraLista(texto: string): string[] {
-    return texto
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    return texto.split(",").map((s) => s.trim()).filter(Boolean);
   }
 
   async function salvar() {
     setErro("");
     if (!form.nome.trim()) {
-      setErro("Dê um nome ao filtro");
+      setErro("Dê um nome ao filtro.");
       return;
     }
     setSalvando(true);
@@ -119,166 +116,142 @@ export default function FiltrosPage() {
 
   if (authCarregando) {
     return (
-      <main style={wrap}>
-        <p style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 13 }}>
-          verificando sessão...
-        </p>
+      <main className="container">
+        <p className="state-loading">Verificando sessão…</p>
       </main>
     );
   }
 
   return (
-    <main style={wrap}>
+    <main className="container">
       <Header email={email} onSair={sair} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 340px) 1fr", gap: 28, alignItems: "start" }}>
-        <section
-          style={{
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius)",
-            padding: 20,
-            position: "sticky",
-            top: 24,
-          }}
-        >
-          <h2 style={{ fontSize: 14, fontFamily: "var(--mono)", marginBottom: 18, color: "var(--accent)" }}>
-            {editandoId ? "editar filtro" : "novo filtro"}
+      <div className="filtros-layout">
+        {/* Formulário */}
+        <section className="filtros-form">
+          <h2 className="section-title">
+            {editandoId ? "Editar filtro" : "Novo filtro"}
           </h2>
 
           <Campo
-            rotulo="nome"
+            id="nome"
+            rotulo="Nome"
             valor={form.nome}
             onChange={(v) => setForm({ ...form, nome: v })}
-            placeholder="Ex: Eletrônicos baratos"
+            placeholder="Ex.: Eletrônicos baratos"
           />
           <Campo
-            rotulo="palavras-chave (separe por vírgula)"
+            id="palavras_chave"
+            rotulo="Palavras-chave"
+            ajuda="Separe por vírgula. Pelo menos uma deve aparecer no título."
             valor={form.palavras_chave}
             onChange={(v) => setForm({ ...form, palavras_chave: v })}
             placeholder="fone, notebook, ssd"
           />
           <Campo
-            rotulo="palavras de bloqueio"
+            id="palavras_bloqueio"
+            rotulo="Palavras de bloqueio"
+            ajuda="Produtos com esses termos no título serão ignorados."
             valor={form.palavras_bloqueio}
             onChange={(v) => setForm({ ...form, palavras_bloqueio: v })}
             placeholder="usado, recondicionado"
           />
 
-          <label style={labelStyle}>categoria</label>
-          <select
-            value={form.categoria}
-            onChange={(e) => setForm({ ...form, categoria: e.target.value })}
-            style={inputStyle}
-          >
-            <option value="">qualquer</option>
-            {CATEGORIAS.filter((c) => c !== "todos").map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          <div className="field">
+            <label className="label" htmlFor="categoria">Categoria</label>
+            <select
+              id="categoria"
+              value={form.categoria}
+              onChange={(e) => setForm({ ...form, categoria: e.target.value })}
+              className="input"
+            >
+              <option value="">Qualquer</option>
+              {CATEGORIAS.filter((c) => c !== "todos").map((c) => (
+                <option key={c} value={c}>
+                  {CATEGORIA_LABELS[c] ?? c}
+                </option>
+              ))}
+            </select>
+          </div>
 
           <Campo
-            rotulo="preço máximo (R$)"
+            id="preco_max"
+            rotulo="Preço máximo (R$)"
             valor={form.preco_max}
             onChange={(v) => setForm({ ...form, preco_max: v })}
             placeholder="3000"
             tipo="number"
           />
 
-          {erro && <p style={{ color: "#e85d5d", fontSize: 13, marginBottom: 12 }}>{erro}</p>}
+          {erro && <p className="error-text" style={{ marginBottom: 12 }}>{erro}</p>}
 
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <div className="form-actions">
             <button
               onClick={salvar}
               disabled={salvando}
-              style={{
-                flex: 1,
-                padding: 10,
-                background: "var(--accent)",
-                color: "#1a1205",
-                border: "none",
-                borderRadius: 8,
-                fontWeight: 600,
-                fontSize: 13,
-                opacity: salvando ? 0.6 : 1,
-              }}
+              className="btn btn-primary"
+              style={{ flex: 1 }}
             >
-              {salvando ? "salvando..." : editandoId ? "atualizar" : "criar filtro"}
+              {salvando ? "Salvando…" : editandoId ? "Atualizar" : "Criar filtro"}
             </button>
             {editandoId && (
-              <button
-                onClick={cancelar}
-                style={{
-                  padding: "10px 16px",
-                  background: "transparent",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  color: "var(--text-dim)",
-                  fontSize: 13,
-                }}
-              >
-                cancelar
+              <button onClick={cancelar} className="btn btn-ghost">
+                Cancelar
               </button>
             )}
           </div>
         </section>
 
+        {/* Lista de filtros */}
         <section>
           {carregando ? (
-            <p style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 13 }}>
-              carregando filtros...
-            </p>
+            <p className="state-loading">Carregando filtros…</p>
           ) : filtros.length === 0 ? (
-            <div
-              style={{
-                border: "1px dashed var(--border)",
-                borderRadius: "var(--radius)",
-                padding: "40px 24px",
-                textAlign: "center",
-                color: "var(--text-dim)",
-              }}
-            >
-              <p style={{ fontFamily: "var(--mono)", fontSize: 14 }}>nenhum filtro criado</p>
-              <p style={{ fontSize: 13, marginTop: 6 }}>
-                Sem filtros, o bot aceita todas as ofertas dos canais.
+            <div className="empty">
+              <p className="empty__title">Nenhum filtro criado</p>
+              <p className="empty__body">
+                Sem filtros, o bot aceita todas as ofertas dos canais monitorados.
               </p>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="filtros-list">
               {filtros.map((f) => (
                 <article
                   key={f.id}
-                  className="fade-in"
-                  style={{
-                    background: "var(--surface)",
-                    border: "1px solid var(--border)",
-                    borderRadius: "var(--radius)",
-                    padding: "16px 18px",
-                    opacity: f.ativo ? 1 : 0.55,
-                  }}
+                  className={`filtro fade-in${f.ativo ? "" : " is-paused"}`}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <h3 style={{ fontSize: 15, fontWeight: 600 }}>{f.nome}</h3>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <BotaoMini onClick={() => alternarAtivo(f)}>
-                        {f.ativo ? "pausar" : "ativar"}
-                      </BotaoMini>
-                      <BotaoMini onClick={() => editar(f)}>editar</BotaoMini>
-                      <BotaoMini onClick={() => remover(f.id)} perigo>
-                        excluir
-                      </BotaoMini>
+                  <div className="filtro__head">
+                    <h3 className="filtro__name">{f.nome}</h3>
+                    <div className="filtro__actions">
+                      <button
+                        className="btn-mini"
+                        onClick={() => alternarAtivo(f)}
+                      >
+                        {f.ativo ? "Pausar" : "Ativar"}
+                      </button>
+                      <button className="btn-mini" onClick={() => editar(f)}>
+                        Editar
+                      </button>
+                      <button
+                        className="btn-mini is-danger"
+                        onClick={() => remover(f.id)}
+                      >
+                        Excluir
+                      </button>
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-dim)" }}>
-                    {f.categoria && <span>cat: {f.categoria}</span>}
-                    {f.preco_max && <span>max: R$ {Number(f.preco_max).toFixed(2)}</span>}
+                  <div className="filtro__meta">
+                    {f.categoria && (
+                      <span>{CATEGORIA_LABELS[f.categoria] ?? f.categoria}</span>
+                    )}
+                    {f.preco_max && (
+                      <span>Máx. R$ {Number(f.preco_max).toFixed(2)}</span>
+                    )}
                     {f.palavras_chave?.length > 0 && (
-                      <span style={{ color: "var(--green)" }}>+ {f.palavras_chave.join(", ")}</span>
+                      <span className="is-keep">+ {f.palavras_chave.join(", ")}</span>
                     )}
                     {f.palavras_bloqueio?.length > 0 && (
-                      <span style={{ color: "#e85d5d" }}>− {f.palavras_bloqueio.join(", ")}</span>
+                      <span className="is-block">− {f.palavras_bloqueio.join(", ")}</span>
                     )}
                   </div>
                 </article>
@@ -292,80 +265,34 @@ export default function FiltrosPage() {
 }
 
 function Campo({
+  id,
   rotulo,
+  ajuda,
   valor,
   onChange,
   placeholder,
   tipo = "text",
 }: {
+  id: string;
   rotulo: string;
+  ajuda?: string;
   valor: string;
   onChange: (v: string) => void;
   placeholder?: string;
   tipo?: string;
 }) {
   return (
-    <>
-      <label style={labelStyle}>{rotulo}</label>
+    <div className="field">
+      <label className="label" htmlFor={id}>{rotulo}</label>
+      {ajuda && <span className="help">{ajuda}</span>}
       <input
+        id={id}
         type={tipo}
         value={valor}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        style={inputStyle}
+        className="input"
       />
-    </>
+    </div>
   );
 }
-
-function BotaoMini({
-  children,
-  onClick,
-  perigo,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  perigo?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        fontFamily: "var(--mono)",
-        fontSize: 11,
-        padding: "4px 10px",
-        background: "transparent",
-        border: "1px solid var(--border)",
-        borderRadius: 6,
-        color: perigo ? "#e85d5d" : "var(--text-dim)",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-const wrap: React.CSSProperties = {
-  maxWidth: 1100,
-  margin: "0 auto",
-  padding: "0 24px 48px",
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 11,
-  color: "var(--text-dim)",
-  fontFamily: "var(--mono)",
-  marginBottom: 4,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "9px 11px",
-  margin: "0 0 14px",
-  background: "var(--surface-2)",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  color: "var(--text)",
-  fontSize: 13,
-};
