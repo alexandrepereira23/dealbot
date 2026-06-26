@@ -21,6 +21,7 @@ Texto da mensagem:
 
 async def extrair_produto(texto: str) -> dict | None:
     """Estrutura o texto da mensagem em um dict de produto, ou None."""
+    await asyncio.sleep(3)  # ← adiciona essa linha no início da função
     try:
         resp = await asyncio.to_thread(
             _model.generate_content, _PROMPT.format(texto=texto)
