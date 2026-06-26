@@ -18,18 +18,34 @@ def _extrair_preco(texto: str) -> tuple[float | None, float | None]:
 
 
 def _extrair_cupom(texto: str) -> str | None:
+    # Padrão 1: cupom: `CODIGO` ou cupom: CODIGO (com ou sem backticks)
     padrao = re.search(
-        r"(?:cupom|cupon|código|code|coupon)\s*[:\-]?\s*([A-Z0-9]{4,20})",
-        texto, re.IGNORECASE,
+        r"(?:cupom|cupon|c[oó]digo|code|coupon)\s*[:\-]?\s*`?([A-Z0-9]{4,20})`?",
+        texto,
+        re.IGNORECASE,
     )
     if padrao:
         return padrao.group(1).upper()
-    padrao2 = re.search(r"\b([A-Z]{3,}[0-9]{2,}|[0-9]{2,}[A-Z]{3,})\b", texto)
-    return padrao2.group(1).upper() if padrao2 else None
+
+    # Padrão 2: Use cupom: `CODIGO`
+    padrao2 = re.search(
+        r"use\s+cupom\s*[:\-]?\s*`?([A-Z0-9]{4,20})`?",
+        texto,
+        re.IGNORECASE,
+    )
+    if padrao2:
+        return padrao2.group(1).upper()
+
+    # Padrão 3: qualquer coisa entre backticks que pareça cupom (só letras+números)
+    padrao3 = re.search(r"`([A-Z0-9]{4,20})`", texto, re.IGNORECASE)
+    if padrao3:
+        return padrao3.group(1).upper()
+
+    return None
 
 
 def _extrair_link(texto: str) -> str | None:
-    match = re.search(r"https?://[^\s]+", texto)
+    match = re.search(r"https?://[^\s`\)]+", texto)
     return match.group() if match else None
 
 
