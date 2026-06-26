@@ -5,7 +5,7 @@ import google.generativeai as genai
 from .config import Config
 
 genai.configure(api_key=Config.GEMINI_API_KEY)
-_model = genai.GenerativeModel("gemini-1.5-flash")
+_model = genai.GenerativeModel("gemini-2.0-flash")
 
 _PROMPT = """Você recebe o texto de uma mensagem de um canal de promoções.
 Extraia os dados e responda APENAS com um JSON válido, sem markdown, no formato:
