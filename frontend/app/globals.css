@@ -432,6 +432,20 @@ select {
   color: var(--text-dim);
 }
 
+.produto__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.produto__date {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
 .produto__title {
   font-size: 14px;
   font-weight: 500;

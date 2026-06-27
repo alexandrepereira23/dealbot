@@ -7,6 +7,7 @@ export const ProdutoModel = {
     let query = supabaseAdmin
       .from(TABELA)
       .select("*")
+      .order("data_oferta", { ascending: false, nullsFirst: false })
       .order("criado_em", { ascending: false })
       .range(offset, offset + limite - 1);
 

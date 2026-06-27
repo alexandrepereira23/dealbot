@@ -9,6 +9,7 @@ export type Produto = {
   categoria: string;
   canal_origem: string | null;
   criado_em: string;
+  data_oferta: string | null;
 };
 
 export type Filtro = {

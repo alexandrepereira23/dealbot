@@ -16,13 +16,19 @@ create table if not exists public.produtos (
     canal_origem    text,
     telegram_msg_id bigint,
     raw_text        text,
-    criado_em       timestamptz default now()
+    criado_em       timestamptz default now(),
+    data_oferta     timestamptz
 );
+
+-- Migração para bancos já existentes (idempotente)
+alter table public.produtos
+    add column if not exists data_oferta timestamptz;
 
 create unique index if not exists uq_produto_msg
     on public.produtos (canal_origem, telegram_msg_id);
 create index if not exists idx_produtos_categoria on public.produtos (categoria);
 create index if not exists idx_produtos_criado_em on public.produtos (criado_em desc);
+create index if not exists idx_produtos_data_oferta on public.produtos (data_oferta desc);
 
 -- 2. FILTROS (regras editáveis pela web)
 create table if not exists public.filtros (
