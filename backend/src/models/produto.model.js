@@ -16,7 +16,7 @@ export const ProdutoModel = {
   async listar({ categoria, q, limite = 60, offset = 0 } = {}) {
     let query = supabaseAdmin
       .from(TABELA)
-      .select("*")
+      .select("*, produto_aparicoes(canal_origem, visto_em)")
       .order("data_oferta", { ascending: false, nullsFirst: false })
       .order("criado_em", { ascending: false })
       .range(offset, offset + limite - 1);
@@ -39,7 +39,7 @@ export const ProdutoModel = {
   async buscarPorId(id) {
     const { data, error } = await supabaseAdmin
       .from(TABELA)
-      .select("*")
+      .select("*, produto_aparicoes(canal_origem, visto_em)")
       .eq("id", id)
       .single();
     if (error) throw error;

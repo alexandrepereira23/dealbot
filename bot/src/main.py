@@ -6,9 +6,16 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 from .config import Config
+from .dedup import gerar_hash
 from .extractor import extrair_produto
 from .filters import carregar_filtros, passa_no_filtro
-from .repository import subir_foto, salvar_produto, listar_canais
+from .repository import (
+    buscar_duplicata,
+    listar_canais,
+    registrar_aparicao,
+    salvar_produto,
+    subir_foto,
+)
 
 client = TelegramClient(
     StringSession(Config.TG_SESSION_STRING),
@@ -35,6 +42,15 @@ async def processar(msg, canal: str, filtros: list[dict]):
             print(f"[filtro] descartado: {produto.get('titulo')}")
             return
 
+        # Dedup precoce: se já existe produto com mesmo hash na janela,
+        # nem baixamos a foto — só registramos a aparição neste canal.
+        hash_oferta = gerar_hash(produto)
+        existente = buscar_duplicata(hash_oferta)
+        if existente:
+            registrar_aparicao(existente, canal, msg.id)
+            print(f"[dedup] já visto em outro canal: {produto.get('titulo')} (produto_id={existente}, canal={canal})")
+            return
+
         foto_url = await subir_foto(msg)
         data_oferta = getattr(msg, "date", None)
         registro = {
@@ -50,8 +66,12 @@ async def processar(msg, canal: str, filtros: list[dict]):
             "raw_text": texto[:2000],
             "data_oferta": data_oferta.isoformat() if data_oferta else None,
         }
-        if salvar_produto(registro):
-            print(f"[ok] salvo: {registro['titulo']}")
+        status, produto_id = salvar_produto(registro)
+        if status == "novo":
+            print(f"[ok] novo: {registro['titulo']} (id={produto_id})")
+        elif status == "duplicado":
+            # Race condition: outro canal entrou entre o check e o save.
+            print(f"[dedup] race — registrado como aparição: {registro['titulo']} (produto_id={produto_id})")
 
 
 def _log_task_exc(task: asyncio.Task) -> None:

@@ -1,6 +1,8 @@
 node_modules/
 .next/
 .env
+.env.local
+.env.*.local
 *.session
 __pycache__/
 *.pyc

@@ -3,13 +3,8 @@ import { ProdutoService } from "../services/produto.service.js";
 export const ProdutoController = {
   async listar(req, res, next) {
     try {
-      const { categoria, q, limite, offset } = req.query;
-      const produtos = await ProdutoService.listar({
-        categoria,
-        q,
-        limite: limite ? Number(limite) : undefined,
-        offset: offset ? Number(offset) : undefined,
-      });
+      // Zod coage e valida no service — controller só repassa o objeto.
+      const produtos = await ProdutoService.listar(req.query);
       res.json(produtos);
     } catch (e) {
       next(e);

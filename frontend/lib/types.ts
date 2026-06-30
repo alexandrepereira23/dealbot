@@ -8,6 +8,7 @@ export type Produto = {
   foto_url: string | null;
   categoria: string;
   canal_origem: string | null;
+  canais?: string[];
   criado_em: string;
   data_oferta: string | null;
 };

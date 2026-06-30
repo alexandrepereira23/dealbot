@@ -20,23 +20,39 @@ function formatarData(produto: Produto): string | null {
   });
 }
 
-function formatarCanal(canal: string | null): string | null {
+function formatarCanal(canal: string | null | undefined): string | null {
   if (!canal) return null;
   // Usernames do Telegram são alfanuméricos/underscore; chat_ids puramente numéricos.
   return /^\d+$/.test(canal) ? canal : `@${canal}`;
 }
 
+function listarCanais(produto: Produto): string[] {
+  const fonte = produto.canais && produto.canais.length > 0
+    ? produto.canais
+    : produto.canal_origem
+      ? [produto.canal_origem]
+      : [];
+  return fonte
+    .map((c) => formatarCanal(c))
+    .filter((c): c is string => c !== null);
+}
+
 export function ProdutoCard({ produto }: { produto: Produto }) {
   const off = desconto(produto);
   const dataFmt = formatarData(produto);
-  const canalFmt = formatarCanal(produto.canal_origem);
+  const canais = listarCanais(produto);
 
   return (
     <article className="produto fade-in">
       <div className="produto__media">
         {produto.foto_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={produto.foto_url} alt={produto.titulo} />
+          <img
+            src={produto.foto_url}
+            alt={produto.titulo}
+            loading="lazy"
+            decoding="async"
+          />
         ) : (
           <div className="produto__no-photo">Sem foto</div>
         )}
@@ -49,10 +65,13 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
           {dataFmt && <span className="produto__date">{dataFmt}</span>}
         </div>
 
-        {canalFmt && (
-          <span className="produto__channel" title={canalFmt}>
-            {canalFmt}
-          </span>
+        {canais.length > 0 && (
+          <div className="produto__channels" title={canais.join(", ")}>
+            <span className="produto__channel">{canais[0]}</span>
+            {canais.length > 1 && (
+              <span className="produto__channel-extra">+{canais.length - 1}</span>
+            )}
+          </div>
         )}
 
         <h3 className="produto__title">{produto.titulo}</h3>

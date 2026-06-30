@@ -446,6 +446,13 @@ select {
   white-space: nowrap;
 }
 
+.produto__channels {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .produto__channel {
   font-family: var(--mono);
   font-size: 11px;
@@ -453,6 +460,18 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.produto__channel-extra {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
 }
 
 .busca {
@@ -730,6 +749,47 @@ select {
 
   .auth-card {
     padding: 24px;
+  }
+
+  /* Tap targets ≥ 44px (WCAG 2.5.5). Input em 16px evita zoom no iOS. */
+  .btn {
+    min-height: 44px;
+    padding: 12px 18px;
+  }
+
+  .btn-mini {
+    min-height: 32px;
+    padding: 6px 12px;
+  }
+
+  .chip {
+    min-height: 36px;
+    padding: 8px 16px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .input {
+    font-size: 16px;
+    padding: 12px 14px;
+  }
+
+  .busca__input {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .form-actions {
+    flex-direction: column;
+  }
+
+  .form-actions .btn {
+    width: 100%;
+  }
+
+  .filtro__actions {
+    flex-wrap: wrap;
   }
 }
 
