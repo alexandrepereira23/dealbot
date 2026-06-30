@@ -20,9 +20,16 @@ function formatarData(produto: Produto): string | null {
   });
 }
 
+function formatarCanal(canal: string | null): string | null {
+  if (!canal) return null;
+  // Usernames do Telegram são alfanuméricos/underscore; chat_ids puramente numéricos.
+  return /^\d+$/.test(canal) ? canal : `@${canal}`;
+}
+
 export function ProdutoCard({ produto }: { produto: Produto }) {
   const off = desconto(produto);
   const dataFmt = formatarData(produto);
+  const canalFmt = formatarCanal(produto.canal_origem);
 
   return (
     <article className="produto fade-in">
@@ -41,6 +48,12 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
           <span className="produto__eyebrow">{produto.categoria}</span>
           {dataFmt && <span className="produto__date">{dataFmt}</span>}
         </div>
+
+        {canalFmt && (
+          <span className="produto__channel" title={canalFmt}>
+            {canalFmt}
+          </span>
+        )}
 
         <h3 className="produto__title">{produto.titulo}</h3>
 

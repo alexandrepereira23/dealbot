@@ -446,6 +446,61 @@ select {
   white-space: nowrap;
 }
 
+.produto__channel {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.busca {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.busca__input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 10px 36px 10px 14px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.busca__input:focus {
+  border-color: var(--accent);
+}
+
+.busca__input::placeholder {
+  color: var(--text-dim);
+}
+
+.busca__clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.busca__clear:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
 .produto__title {
   font-size: 14px;
   font-weight: 500;

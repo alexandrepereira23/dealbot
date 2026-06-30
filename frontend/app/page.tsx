@@ -6,6 +6,7 @@ import { Produto, CATEGORIA_LABELS } from "@/lib/types";
 import { Header } from "@/components/Header";
 import { FiltroCategorias } from "@/components/FiltroCategorias";
 import { ProdutoCard } from "@/components/ProdutoCard";
+import { BuscaInput } from "@/components/BuscaInput";
 
 type Stats = { total: number; porCategoria: Record<string, number> };
 
@@ -14,14 +15,26 @@ export default function Home() {
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [categoria, setCategoria] = useState("todos");
+  const [busca, setBusca] = useState("");
+  const [buscaAplicada, setBuscaAplicada] = useState("");
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
+
+  // Debounce: aplica a busca 300ms depois que o usuário para de digitar.
+  useEffect(() => {
+    const id = setTimeout(() => setBuscaAplicada(busca.trim()), 300);
+    return () => clearTimeout(id);
+  }, [busca]);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
     setErro("");
     try {
-      const rota = categoria === "todos" ? "/produtos" : `/produtos?categoria=${categoria}`;
+      const params = new URLSearchParams();
+      if (categoria && categoria !== "todos") params.set("categoria", categoria);
+      if (buscaAplicada.length >= 2) params.set("q", buscaAplicada);
+      const qs = params.toString();
+      const rota = qs ? `/produtos?${qs}` : "/produtos";
       const [lista, estat] = await Promise.all([
         api.get(rota),
         api.get("/produtos/estatisticas"),
@@ -33,7 +46,7 @@ export default function Home() {
     } finally {
       setCarregando(false);
     }
-  }, [categoria]);
+  }, [categoria, buscaAplicada]);
 
   useEffect(() => {
     if (!authCarregando) carregar();
@@ -57,6 +70,8 @@ export default function Home() {
         <Metrica rotulo={CATEGORIA_LABELS.casa} valor={stats?.porCategoria?.casa ?? 0} />
         <Metrica rotulo={CATEGORIA_LABELS.moda} valor={stats?.porCategoria?.moda ?? 0} />
       </div>
+
+      <BuscaInput valor={busca} onChange={setBusca} />
 
       <FiltroCategorias ativo={categoria} onChange={setCategoria} />
 

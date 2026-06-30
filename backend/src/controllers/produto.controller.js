@@ -3,9 +3,10 @@ import { ProdutoService } from "../services/produto.service.js";
 export const ProdutoController = {
   async listar(req, res, next) {
     try {
-      const { categoria, limite, offset } = req.query;
+      const { categoria, q, limite, offset } = req.query;
       const produtos = await ProdutoService.listar({
         categoria,
+        q,
         limite: limite ? Number(limite) : undefined,
         offset: offset ? Number(offset) : undefined,
       });

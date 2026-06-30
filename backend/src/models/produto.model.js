@@ -2,8 +2,18 @@ import { supabaseAdmin } from "../config/supabase.js";
 
 const TABELA = "produtos";
 
+// Escapa wildcards do LIKE/ILIKE para o termo do usuário ser tratado como literal.
+// Vírgula é escapada porque o .or() do supabase-js usa vírgula como separador.
+function escaparTermoLike(termo) {
+  return termo
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_")
+    .replace(/,/g, "\\,");
+}
+
 export const ProdutoModel = {
-  async listar({ categoria, limite = 60, offset = 0 } = {}) {
+  async listar({ categoria, q, limite = 60, offset = 0 } = {}) {
     let query = supabaseAdmin
       .from(TABELA)
       .select("*")
@@ -14,6 +24,13 @@ export const ProdutoModel = {
     if (categoria && categoria !== "todos") {
       query = query.eq("categoria", categoria);
     }
+
+    const termo = typeof q === "string" ? q.trim() : "";
+    if (termo.length >= 2) {
+      const padrao = `%${escaparTermoLike(termo)}%`;
+      query = query.or(`titulo.ilike.${padrao},raw_text.ilike.${padrao}`);
+    }
+
     const { data, error } = await query;
     if (error) throw error;
     return data;
