@@ -31,4 +31,6 @@ export const env = {
   supabaseServiceKey: obrigatorio("SUPABASE_SERVICE_KEY"),
   supabaseAnonKey: obrigatorio("SUPABASE_ANON_KEY"),
   corsOrigin: resolverCorsOrigin(),
+  retencaoHoras: Number(process.env.RETENCAO_HORAS ?? 48),
+  limpezaIntervaloMin: Number(process.env.LIMPEZA_INTERVALO_MIN ?? 60),
 };
