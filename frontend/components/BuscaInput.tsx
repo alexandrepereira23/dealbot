@@ -14,7 +14,7 @@ export function BuscaInput({ valor, onChange, placeholder }: Props) {
         className="busca__input"
         value={valor}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder ?? "Buscar (ex: acer, 200hz, rtx)"}
+        placeholder={placeholder ?? "Buscar (ex: acer, cupom, rtx)"}
         autoComplete="off"
         spellCheck={false}
       />

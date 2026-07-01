@@ -14,6 +14,8 @@ export default function Home() {
   const { carregando: authCarregando, email, sair } = useAuth();
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [comCupom, setComCupom] = useState(0);
+  const [menorPreco, setMenorPreco] = useState<number | null>(null);
   const [categoria, setCategoria] = useState("todos");
   const [busca, setBusca] = useState("");
   const [buscaAplicada, setBuscaAplicada] = useState("");
@@ -41,6 +43,11 @@ export default function Home() {
       ]);
       setProdutos(lista);
       setStats(estat);
+      // calcula métricas extras a partir da lista
+      const cupons = (lista as Produto[]).filter((p) => p.cupom).length;
+      const precos = (lista as Produto[]).map((p) => p.preco).filter(Boolean) as number[];
+      setComCupom(cupons);
+      setMenorPreco(precos.length ? Math.min(...precos) : null);
     } catch (e) {
       setErro(e instanceof Error ? e.message : "Falha ao carregar");
     } finally {
@@ -63,20 +70,18 @@ export default function Home() {
   return (
     <main className="container">
       <Header email={email} onSair={sair} />
-
       <div className="metrics">
         <Metrica rotulo="Total" valor={stats?.total ?? 0} />
         <Metrica rotulo={CATEGORIA_LABELS.eletronicos} valor={stats?.porCategoria?.eletronicos ?? 0} />
-        <Metrica rotulo={CATEGORIA_LABELS.casa} valor={stats?.porCategoria?.casa ?? 0} />
-        <Metrica rotulo={CATEGORIA_LABELS.moda} valor={stats?.porCategoria?.moda ?? 0} />
+        <Metrica rotulo="Com cupom" valor={comCupom} />
+        <Metrica
+          rotulo="Menor preço"
+          valor={menorPreco ? `R$ ${menorPreco.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "—"}
+        />
       </div>
-
       <BuscaInput valor={busca} onChange={setBusca} />
-
       <FiltroCategorias ativo={categoria} onChange={setCategoria} />
-
       {erro && <p className="error-text" style={{ marginBottom: 16 }}>{erro}</p>}
-
       {carregando ? (
         <p className="state-loading">Carregando ofertas…</p>
       ) : produtos.length === 0 ? (
@@ -97,7 +102,7 @@ export default function Home() {
   );
 }
 
-function Metrica({ rotulo, valor }: { rotulo: string; valor: number }) {
+function Metrica({ rotulo, valor }: { rotulo: string; valor: number | string }) {
   return (
     <div className="metric">
       <div className="metric__label">{rotulo}</div>

@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 import { Produto } from "@/lib/types";
 
 function desconto(p: Produto): number | null {
@@ -22,7 +23,6 @@ function formatarData(produto: Produto): string | null {
 
 function formatarCanal(canal: string | null | undefined): string | null {
   if (!canal) return null;
-  // Usernames do Telegram são alfanuméricos/underscore; chat_ids puramente numéricos.
   return /^\d+$/.test(canal) ? canal : `@${canal}`;
 }
 
@@ -38,9 +38,18 @@ function listarCanais(produto: Produto): string[] {
 }
 
 export function ProdutoCard({ produto }: { produto: Produto }) {
+  const [copiado, setCopiado] = useState(false);
   const off = desconto(produto);
   const dataFmt = formatarData(produto);
   const canais = listarCanais(produto);
+
+  function copiarCupom() {
+    if (!produto.cupom) return;
+    navigator.clipboard.writeText(produto.cupom).then(() => {
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2000);
+    });
+  }
 
   return (
     <article className="produto fade-in">
@@ -58,13 +67,11 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
         )}
         {off && <span className="produto__badge">-{off}%</span>}
       </div>
-
       <div className="produto__body">
         <div className="produto__meta">
           <span className="produto__eyebrow">{produto.categoria}</span>
           {dataFmt && <span className="produto__date">{dataFmt}</span>}
         </div>
-
         {canais.length > 0 && (
           <div className="produto__channels" title={canais.join(", ")}>
             <span className="produto__channel">{canais[0]}</span>
@@ -73,9 +80,7 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
             )}
           </div>
         )}
-
         <h3 className="produto__title">{produto.titulo}</h3>
-
         <div className="produto__prices">
           <span className="produto__price">
             R$ {produto.preco?.toFixed(2) ?? "—"}
@@ -86,14 +91,19 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
             </span>
           )}
         </div>
-
         {produto.cupom && (
           <div className="produto__coupon">
             <span>Cupom</span>
-            {produto.cupom}
+            <strong>{produto.cupom}</strong>
+            <button
+              onClick={copiarCupom}
+              className="produto__coupon-copy"
+              aria-label="Copiar cupom"
+            >
+              {copiado ? "✓" : "copiar"}
+            </button>
           </div>
         )}
-
         {produto.link && (
           <a
             href={produto.link}
