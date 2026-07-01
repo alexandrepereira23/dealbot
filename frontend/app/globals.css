@@ -94,6 +94,9 @@ select {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-family: var(--mono);
   font-weight: 700;
   font-size: 16px;
@@ -576,6 +579,23 @@ select {
 
 .produto__coupon span {
   color: var(--text-dim);
+}
+
+.produto__coupon-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: auto;
+  cursor: pointer;
+  color: var(--text-dim);
+  transition: color 0.15s;
+}
+
+.produto__coupon-copy:hover {
+  color: var(--green);
 }
 
 .produto__cta {
