@@ -1,15 +1,9 @@
 import unicodedata
-from .db import supabase
 
 
 def _normalizar(texto: str) -> str:
     """Remove acentos e converte para minúsculo para comparação."""
     return unicodedata.normalize("NFD", texto.lower()).encode("ascii", "ignore").decode()
-
-
-def carregar_filtros() -> list[dict]:
-    res = supabase.table("filtros").select("*").eq("ativo", True).execute()
-    return res.data or []
 
 
 def passa_no_filtro(produto: dict, filtros: list[dict]) -> bool:

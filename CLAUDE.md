@@ -40,13 +40,16 @@ python gerar_sessao.py     # one-time: generates TG_SESSION_STRING
 python -m src.main         # run the live worker
 ```
 
-There are **no automated tests** and no linters beyond `next lint`.
+Bot tests: `cd bot` then `python -m unittest discover -s tests -v` (offline clients,
+SQLite real; SDK contracts need requirements installed and POSIX signal tests need
+Linux/WSL). `python -m simulacao --seed 42` runs the offline benchmark. See README
+for persistent state, limits and commands. No Python lint tool is configured.
 
 ## CRITICAL: two divergent bot implementations
 
 The `bot/` directory contains two separate, non-equivalent entrypoints. Know which one you are touching:
 
-- **`bot/src/` (current, active)** — modular: `config.py`, `db.py`, `extractor.py`, `filters.py`, `repository.py`, `main.py`. `extractor.py` is **pure regex/heuristics — no AI**. This is what `dealbot.service` (systemd) runs via `python -m src.main`, and the only path supported by `requirements.txt` (telethon, supabase, python-dotenv). **Live mode only.** The AI extractor was deliberately removed (commit "Remoção de filtro por IA").
+- **`bot/src/` (current, active)** — `main.py` composes the durable SQLite inbox (`estado.py`), bounded workers (`pipeline.py`), history/config refresh (`recuperacao.py`), async Supabase repository and isolated media adapter. `extractor.py` is **pure regex/heuristics — no AI**. `dealbot.service` (systemd) runs `python -m src.main`; use Python 3.12 and the pinned `requirements.txt`. Live capture plus paginated recovery; one collector instance with persistent private state. Preserve existing extraction/filter/hash behavior. The AI extractor was deliberately removed (commit "Remoção de filtro por IA").
 - **`bot/bot.py` (legacy, dead)** — self-contained monolith using Gemini (`google.generativeai`, `gemini-1.5-flash`) for extraction, supporting both `live` and `polling` modes. It depends on `google-generativeai` and `requests`, which are **not in `requirements.txt`**, so it will not run as-is. This is the **only file still referencing AI** — the project no longer uses it. Treat as dead code; do not assume it reflects current behavior, and don't copy its Gemini/`MODO=polling` patterns into new code.
 
 Docs (`README.md`, `.env.example`, `bot/.env.example`) have been scrubbed of Gemini/`MODO` references and now describe the regex-only `src/` worker. The `bot_state` table remains in `schema.sql` but is only used by the dead polling path in `bot.py`.
@@ -78,7 +81,7 @@ routes/ → controllers/ → services/ → models/ → Supabase
 ## Data model essentials (`supabase/schema.sql`)
 
 - `produtos` — captured offers. Deduplicated by a unique index + upsert on `(canal_origem, telegram_msg_id)`, so re-processing the same Telegram message is idempotent.
-- `filtros` — user-editable capture rules (`palavras_chave`, `palavras_bloqueio`, `categoria`, `preco_max`, `ativo`). The bot loads active filters per message; `passa_no_filtro` accepts a product if it passes **at least one** active filter (no filters = accept everything).
+- `filtros` — user-editable capture rules (`palavras_chave`, `palavras_bloqueio`, `categoria`, `preco_max`, `ativo`). Cached/refreshed independently; unknown configuration waits, valid empty filters accept all. `passa_no_filtro` accepts a product if it passes **at least one** active filter.
 - `canais` — Telegram channels to monitor (only `ativo=true` are watched). Add channels here, not in code.
 - `bot_state` — last processed message id per channel; only the legacy polling path uses it.
 - Categories are a fixed set (`eletronicos, casa, moda, alimentos, beleza, games, outros`), defined both in `extractor.py` keyword maps and `frontend/lib/types.ts` `CATEGORIAS` — keep the two in sync.

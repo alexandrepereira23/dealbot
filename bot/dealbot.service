@@ -10,6 +10,11 @@ ExecStart=/home/ubuntu/dealbot/bot/venv/bin/python -m src.main
 Restart=always
 RestartSec=10
 EnvironmentFile=/home/ubuntu/dealbot/bot/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=BOT_STATE_DIR=/home/ubuntu/dealbot-state
+UMask=0077
+KillSignal=SIGTERM
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target

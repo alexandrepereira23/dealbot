@@ -9,3 +9,7 @@ __pycache__/
 venv/
 .DS_Store
 /tmp/
+*.sqlite3
+*.sqlite3-*
+coletor.lock
+.dealbot-state/
