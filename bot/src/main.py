@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import signal
 import time
 from typing import Any, Callable
 
@@ -17,6 +16,7 @@ from .pipeline import Pipeline
 from .politica import classificar
 from .recuperacao import Recuperacao
 from .repository import RepositorioSupabase
+from .sinais import sinais_encerramento
 from .telegram import Telegram
 
 
@@ -113,6 +113,47 @@ async def supervisionar_conexao(telegram: Telegram, recuperacao: Recuperacao,
             await asyncio.sleep(falha.espera)
 
 
+async def limpar_ciclo(estado: EstadoLocal, config: Config, antes: float) -> tuple[dict[str, int], bool]:
+    """Orçamento em lotes, não prazo rígido de disco; uma tabela não bloqueia a outra."""
+    total = {"eventos": 0, "midias": 0}
+    continuar = False
+    for _ in range(config.limpeza_max_lotes):
+        removidos = await estado.limpar(antes, config.limpeza_lote)
+        for classe in total:
+            total[classe] += removidos[classe]
+        continuar = any(n == config.limpeza_lote for n in removidos.values())
+        # Libera ofertas novas entre transações, mesmo com executor sempre ocupado.
+        await asyncio.sleep(0)
+        if not continuar:
+            break
+    return total, continuar
+
+
+async def manutencao(estado: EstadoLocal, pipeline: Pipeline, config: Config) -> None:
+    antes = None
+    tentativas = 0
+    while True:
+        if antes is None:
+            antes = time.time() - config.retencao_dias * 86400
+        try:
+            removidos, continuar = await limpar_ciclo(estado, config, antes)
+            log("estado_local", removidos=removidos, continuar=continuar, cutoff=antes,
+                workers=pipeline.ativos, **await estado.resumo())
+            tentativas = 0
+            espera = config.limpeza_continuacao if continuar else config.limpeza_intervalo
+            if not continuar:
+                antes = None
+        except FalhaLocal:
+            raise
+        except Exception as erro:
+            tentativas += 1
+            falha = classificar(erro, tentativas, config.retry_base, config.retry_max)
+            espera = max(config.limpeza_continuacao, falha.espera)
+            log("atualizacao_falhou", componente="manutencao", motivo=falha.motivo, espera=espera)
+        # Mesmo cutoff nas continuações: não perseguir novas finalizações sob carga.
+        await asyncio.sleep(espera)
+
+
 async def servir(client: Any, estado: EstadoLocal, repositorio: Any, armazenamento: Any,
                  config: Config, parar: asyncio.Event, sobrecarga: asyncio.Event) -> None:
     """Composição testável: tarefas são supervisionadas e encerradas antes do estado."""
@@ -137,10 +178,6 @@ async def servir(client: Any, estado: EstadoLocal, repositorio: Any, armazenamen
             if not recepcao_fatal.done():
                 recepcao_fatal.set_result(erro)
 
-    async def manutencao() -> None:
-        removidos = await estado.limpar(time.time() - config.retencao_dias * 86400)
-        log("estado_local", removidos=removidos, workers=pipeline.ativos, **await estado.resumo())
-
     client.add_event_handler(handler, events.NewMessage())
     pipeline.iniciar()
     try:
@@ -155,8 +192,7 @@ async def servir(client: Any, estado: EstadoLocal, repositorio: Any, armazenamen
                 "canais"), name="cache-canais"),
             asyncio.create_task(recuperacao.executar(), name="recuperacao"),
             asyncio.create_task(supervisionar_conexao(telegram, recuperacao, sobrecarga, config), name="conexao"),
-            asyncio.create_task(periodico(manutencao, config.limpeza_intervalo, config,
-                "manutencao"), name="manutencao"),
+            asyncio.create_task(manutencao(estado, pipeline, config), name="manutencao"),
             asyncio.create_task(parar.wait(), name="sinais"),
         ]
         concluidas, _ = await asyncio.wait([*tasks, pipeline.fatal, recepcao_fatal], return_when=asyncio.FIRST_COMPLETED)
@@ -193,28 +229,26 @@ async def main() -> None:
         logging.getLogger(nome).setLevel(logging.CRITICAL)
     parar = asyncio.Event()
     sobrecarga = asyncio.Event()
-    for sinal in (signal.SIGTERM, signal.SIGINT):
-        # signal.signal funciona também no loop Windows; só instalar na thread principal.
-        signal.signal(sinal, lambda recebido, frame: parar.set())
     estado = EstadoLocal(config.state_dir, config.buffer_max, config.prioridade_live_cota)
     remoto = None
-    try:
-        await estado.abrir()
-        remoto = await criar_cliente(obrigatoria("SUPABASE_URL"), obrigatoria("SUPABASE_SERVICE_KEY"),
-                                     config.rede_timeout, config.midia_timeout)
-        client = TelegramClient(StringSession(obrigatoria("TG_SESSION_STRING")),
-            int(obrigatoria("TG_API_ID")), obrigatoria("TG_API_HASH"),
-            sequential_updates=True, flood_sleep_threshold=0, request_retries=0,
-            raise_last_call_error=True, timeout=config.rede_timeout)
-        limitar_updates(client, config.buffer_max, sobrecarga)
-        await servir(client, estado, RepositorioSupabase(remoto, config.rede_timeout),
-                     ArmazenamentoSupabase(remoto, config.midia_timeout), config, parar, sobrecarga)
-    finally:
+    with sinais_encerramento(parar):
         try:
-            if remoto is not None:
-                await fechar_cliente(remoto)
+            await estado.abrir()
+            remoto = await criar_cliente(obrigatoria("SUPABASE_URL"), obrigatoria("SUPABASE_SERVICE_KEY"),
+                                         config.rede_timeout, config.midia_timeout)
+            client = TelegramClient(StringSession(obrigatoria("TG_SESSION_STRING")),
+                int(obrigatoria("TG_API_ID")), obrigatoria("TG_API_HASH"),
+                sequential_updates=True, flood_sleep_threshold=0, request_retries=0,
+                raise_last_call_error=True, timeout=config.rede_timeout)
+            limitar_updates(client, config.buffer_max, sobrecarga)
+            await servir(client, estado, RepositorioSupabase(remoto, config.rede_timeout),
+                         ArmazenamentoSupabase(remoto, config.midia_timeout), config, parar, sobrecarga)
         finally:
-            await estado.fechar()
+            try:
+                if remoto is not None:
+                    await fechar_cliente(remoto)
+            finally:
+                await estado.fechar()
 
 
 if __name__ == "__main__":

@@ -232,7 +232,7 @@ class TestPipeline(unittest.IsolatedAsyncioTestCase):
         await self.estado.atualizar_midia(2, estado="retry", proxima=time.time() + 10000)
         antes = time.time() + 1
         removidos = await self.estado.limpar(antes)
-        self.assertEqual(removidos, 2)
+        self.assertEqual(removidos, {"eventos": 2, "midias": 0})
         self.assertIsNotNone(await self.estado.evento(-100111, 2))
         self.assertIsNotNone(await self.estado.evento(-100111, 4))
         self.assertEqual(len(await self.estado.canais()), 1)

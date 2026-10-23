@@ -12,6 +12,9 @@ class Config:
     state_dir: Path = Path.home() / ".local" / "state" / "dealbot"
     retencao_dias: float = 7
     limpeza_intervalo: float = 3600
+    limpeza_lote: int = 100
+    limpeza_max_lotes: int = 10
+    limpeza_continuacao: float = 1
     oferta_workers: int = 4
     midia_workers: int = 1
     io_workers: int = 1
@@ -40,12 +43,20 @@ class Config:
             raise ValueError("BOT_RETRY_MAX_S precisa ser >= BOT_RETRY_BASE_S")
         if self.io_workers != 1:
             raise ValueError("BOT_IO_WORKERS precisa ser 1: conexão SQLite tem afinidade de thread")
+        for nome, limite in (("limpeza_lote", 1000), ("limpeza_max_lotes", 100)):
+            valor = getattr(self, nome)
+            if type(valor) is not int or valor > limite:
+                raise ValueError(f"{nome} precisa ser inteiro e não pode exceder {limite}")
+        if self.limpeza_continuacao > 60:
+            raise ValueError("BOT_LIMPEZA_CONTINUACAO_S não pode exceder 60")
 
     @classmethod
     def carregar(cls) -> "Config":
         """Lê tuning sem carregar .env (responsabilidade da entrada principal)."""
         nomes = {
             "retencao_dias": "RETENCAO_DIAS", "limpeza_intervalo": "LIMPEZA_INTERVALO_S",
+            "limpeza_lote": "LIMPEZA_LOTE", "limpeza_max_lotes": "LIMPEZA_MAX_LOTES",
+            "limpeza_continuacao": "LIMPEZA_CONTINUACAO_S",
             "oferta_workers": "OFERTA_WORKERS", "midia_workers": "MIDIA_WORKERS",
             "io_workers": "IO_WORKERS", "buffer_max": "BUFFER_MAX",
             "filtros_intervalo": "FILTROS_INTERVALO_S", "canais_intervalo": "CANAIS_INTERVALO_S",

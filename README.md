@@ -165,7 +165,16 @@ mais nova. IDs podem ter lacunas. A conclusão de processamento é outro estado.
   conferência/compensação. Duplicatas mantêm a classificação também nos retries,
   sem alterar o hash ou a janela de 48h.
 - **Retenção:** `BOT_RETENCAO_DIAS=7` vale para eventos inteiramente finalizados;
-  limpeza em lotes a cada hora. Não apaga pendências, retries, mídia ou
+  uma drenagem começa a cada hora (`BOT_LIMPEZA_INTERVALO_S=3600`, também no startup).
+  Cada ciclo executa até `BOT_LIMPEZA_MAX_LOTES=10` transações de no máximo
+  `BOT_LIMPEZA_LOTE=100` eventos **e** 100 mídias, cedendo execução entre lotes.
+  Se qualquer tabela encher seu último lote, retoma após
+  `BOT_LIMPEZA_CONTINUACAO_S=1`, com o mesmo cutoff até esgotar os elegíveis;
+  só então aguarda o intervalo normal e renova o cutoff. Um lote exatamente
+  cheio pode causar uma consulta extra vazia. O orçamento limita lotes/registros,
+  não garante prazo rígido de disco/SQLite. Lote aceita até 1000, ciclos até 100
+  lotes e continuação até 60s; todos positivos/finitos, contagens inteiras.
+  Não apaga pendências, retries, mídia ou
   compensações recuperáveis. Fronteiras/aliases são preservados. Essa retenção
   não muda a limpeza remota da API, por padrão 48h (`RETENCAO_HORAS`).
 
@@ -173,7 +182,7 @@ Todos os parâmetros e valores de exemplo estão em `bot/.env.example` e no
 `.env.example` da raiz. Os principais limites são 4 workers de oferta, 1 de
 mídia, 1 executor SQLite (`BOT_IO_WORKERS` aceita somente 1), buffer/página de
 100, mídia até 10MiB, timeout remoto de 10s e de mídia de 30s. Intervalos e
-valores devem ser positivos/finitos e o lote não pode exceder o buffer. Não há
+valores devem ser positivos/finitos e o lote de recuperação não pode exceder o buffer. Não há
 task de processamento por mensagem nem consulta de filtros por mensagem.
 
 O transporte Telethon 1.36.0 usa despacho sequencial e uma fila de updates
@@ -185,8 +194,13 @@ promessa de memória em bytes constante sob qualquer resposta do Telegram.
 Mudanças de versão exigem revalidar essa adaptação.
 
 SIGTERM/SIGINT param recepção e tarefas auxiliares, aguardam workers por
-`BOT_SHUTDOWN_TIMEOUT_S=25` e preservam o restante como retry. A unit usa 60s
-de prazo total; se aumentar timeouts/drenagem, ajuste `TimeoutStopSec`.
+`BOT_SHUTDOWN_TIMEOUT_S=25` e preservam o restante como retry. Esse orçamento limita
+a espera antes de cancelar; devolver claims duravelmente e fechar recursos têm
+custo adicional. A unit usa 60s de prazo total. O registro usa
+`loop.add_signal_handler` onde suportado;
+no Windows/fallback agenda via `loop.call_soon_threadsafe`, acordando o loop
+mesmo ocioso. Instala na thread principal e restaura handlers ao sair. Se aumentar
+timeouts/drenagem, ajuste `TimeoutStopSec`.
 Interrupção forçada deixa claims para recuperação no startup. Para reverter a
 versão, pare o processo, preserve o diretório e restaure o código desejado sem
 apagar fila. O código anterior é live-only e não consumirá esse backlog; nunca

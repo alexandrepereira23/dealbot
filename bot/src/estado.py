@@ -382,8 +382,11 @@ class EstadoLocal:
             return self._conexao().execute(f"SELECT MIN(proxima) FROM {tabela} WHERE estado IN {estados}").fetchone()[0]
         return await self._executar(op)
 
-    async def limpar(self, antes: float, lote: int = 100) -> int:
-        def op() -> int:
+    async def limpar(self, antes: float, lote: int = 100) -> dict[str, int]:
+        """Uma transação curta; contagens independentes para controlar a drenagem."""
+        if type(lote) is not int or not 1 <= lote <= 1000:
+            raise ValueError("lote de limpeza precisa ser inteiro entre 1 e 1000")
+        def op() -> dict[str, int]:
             db = self._conexao()
             with db:
                 # Não apagar a fonte de mídia recuperável, mesmo se sua oferta já terminou.
@@ -394,10 +397,10 @@ class EstadoLocal:
                     AND NOT EXISTS(SELECT 1 FROM donos_hash d WHERE d.canal_id=e.canal_id AND d.msg_id=e.msg_id)
                     LIMIT ?""", (antes, lote)).fetchall()
                 db.executemany("DELETE FROM eventos WHERE canal_id=? AND msg_id=?", [tuple(r) for r in ids])
-                db.execute("""DELETE FROM midias WHERE produto_id IN (SELECT produto_id FROM midias
+                midias = db.execute("""DELETE FROM midias WHERE produto_id IN (SELECT produto_id FROM midias
                     WHERE estado IN ('pronta','sem_foto','falha_permanente','removida') AND compensar=0
                     AND finalizado_em<? LIMIT ?)""", (antes, lote))
-                return len(ids)
+                return {"eventos": len(ids), "midias": midias.rowcount}
         return await self._executar(op)
 
     async def resumo(self) -> dict:
