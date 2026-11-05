@@ -39,6 +39,9 @@ _PRECO_DESCRICAO = re.compile(
     r"de|por|antes(?:\s+de)?|era|agora|final|pre[cç]o|valor|pix)\s*[:=]?\s*)?" + _MOEDA.pattern,
     re.IGNORECASE,
 )
+_PAGAMENTO_DESCRICAO = re.compile(
+    r"(?<!\w)(?:[aà]\s+vista|(?:no\s+)?pix)(?!\w)\s*[:=]?", re.IGNORECASE,
+)
 _SERVICO_DESCRICAO = re.compile(
     r"(?<!\w)(?:frete|envio|entrega|parcelamento|desconto|economize|economia|cashback|"
     r"cupom|compra\s+m[ií]nima|acima\s+de)(?!\w)", re.IGNORECASE,
@@ -57,6 +60,13 @@ _SERVICO_MONETARIO = re.compile(
     r"compra\s+m[ií]nima|acima\s+de)\s*(?:[:=\-–—]\s*)?"
     r"(?:(?:de|por)\s*)?(?:[:=\-–—]\s*)?" + _MOEDA.pattern,
     re.IGNORECASE,
+)
+_PALAVRA_DESTINO = r"(?!(?:de|da|do|dos|das|e)\b)[^\W\d_]+(?:[-'’][^\W\d_]+)*"
+_FRETE_DESTINO = re.compile(
+    r"(?<!\w)(?:frete|envio|entrega)\s+(?:para|em)\s+"
+    r"(?P<destino>" + _PALAVRA_DESTINO + r"(?:\s+" + _PALAVRA_DESTINO + r")?"
+    r"(?:\s+(?:de|da|do|dos|das|e)\s+" + _PALAVRA_DESTINO
+    + r"(?:\s+" + _PALAVRA_DESTINO + r")?){0,2})\s*[:=\-–—]?\s*$"
 )
 _PARCELA_DESCRICAO = re.compile(
     r"(?<!\w)(?:\d+\s*(?:x|vezes)|parcelas?)\s*(?:de\s*)?[:=]?\s*"
@@ -263,6 +273,14 @@ def _papel_preco(antes: str, depois: str) -> str:
     if (re.search(r"(?:frete|envio|entrega)\s*(?:[:=\-–—]\s*)?(?:(?:de|por)\s*)?(?:[:=\-–—]\s*)?$", antes)
             or re.match(r"\s*de\s+(?:frete|envio|entrega)\b", depois)):
         return "frete"
+    destino = _FRETE_DESTINO.search(antes)
+    if destino:
+        local = destino.group("destino")
+        # Destino curto (até 8 palavras; extensões ligadas por conectivos), na
+        # mesma cláusula. Não absorver objeto/marcador monetário intermediário.
+        if not (_OBJETO.search(local) or _SERVICO_DESCRICAO.search(local) or re.search(
+                r"\b(?:produto|item|por|preco|valor|final|agora|antes|era|vista|pix)\b", local)):
+            return "frete"
     if re.search(r"(?<!\w)(?:acima\s+de|a\s+partir\s+de|minim[oa](?:\s+de)?|compras\s+de)\s*$", antes):
         return "compra_minima"
     if re.search(r"(?:desconto|economize|economia|cashback|cupom)\s*(?:de\s*)?[:=]?\s*$", antes) or re.match(r"\s*(?:de\s+desconto|off\b|de\s+cashback)", depois):
@@ -300,6 +318,9 @@ def _descricao_trecho(trecho: str) -> tuple[str, str]:
     trecho = _PARCELA_DESCRICAO.sub(" ", trecho)
     trecho = _PRECO_DESCRICAO.sub(" ", trecho)
     trecho = _VALOR_CONTEXTUAL.sub(" ", trecho)
+    # Remover só a forma de pagamento residual, inclusive em linha própria;
+    # não entregar "no Pix USADO" ao descarte integral de _LINHA_SERVICO.
+    trecho = _PAGAMENTO_DESCRICAO.sub(" ", trecho)
     # Serviço/preço retirado pode deixar só delimitadores decorativos. Eles
     # não são marca/modelo residual nem evidência de outro produto.
     trecho = re.sub(r"\(\s*\)|\[\s*\]|\{\s*\}", " ", trecho)
@@ -308,6 +329,7 @@ def _descricao_trecho(trecho: str) -> tuple[str, str]:
     if trecho != original:
         normalizada = normalizar_texto(trecho)
     if (not normalizada or _LINHA_SERVICO.match(normalizada)
+            or _RODAPE.match(normalizada.lstrip(" ([{"))
             or _chamada_generica(normalizada) or not any(c.isalpha() for c in trecho)):
         return "", ""
     return trecho, normalizada
