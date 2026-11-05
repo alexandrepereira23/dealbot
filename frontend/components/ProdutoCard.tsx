@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Produto } from "@/lib/types";
 
 function desconto(p: Produto): number | null {
-  if (!p.preco || !p.preco_original || p.preco_original <= p.preco) return null;
+  if (p.preco === null || p.preco_original === null || p.preco_original <= p.preco) return null;
   return Math.round((1 - p.preco / p.preco_original) * 100);
 }
 

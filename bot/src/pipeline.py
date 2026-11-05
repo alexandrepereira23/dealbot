@@ -5,15 +5,15 @@ import json
 import time
 from typing import Any
 
+from .avaliacao import avaliar_mensagem
 from .cache import CacheFiltros
 from .config import Config
 from .dedup import gerar_hash
 from .estado import EstadoLocal
-from .extractor import extrair_produto
-from .filters import passa_no_filtro
 from .modelos import Aguardar, ErroPermanente, FalhaLocal, Mensagem
 from .observabilidade import log
 from .politica import classificar
+from .repository import CAMPOS_PRODUTO
 
 
 class Pipeline:
@@ -151,20 +151,36 @@ class Pipeline:
             if self.cache.filtros is None:
                 await self.estado.adiar_oferta(job, "aguardando_config", 0, "filtros_indisponiveis")
                 return
-            produto = await extrair_produto(job["texto"])
-            if not produto or not passa_no_filtro(produto, self.cache.filtros):
-                motivo = "sem_produto" if not produto else "filtro"
-                await self.estado.finalizar_oferta(job, "descartada", resultado=motivo)
-                log("oferta_descartada", canal_id=job["canal_id"], msg_id=job["msg_id"], motivo=motivo)
+            contexto = json.loads(job.get("contexto") or "{}")
+            preparados = self.cache.preparados
+            if preparados is None:
+                raise FalhaLocal("snapshot_preparado_ausente")
+            resultado_local = avaliar_mensagem(job["texto"], preparados, contexto,
+                canal_id=job["canal_id"], username=job["username"])
+            diagnostico = {**resultado_local.diagnostico, "snapshot": self.cache.versao}
+            if not resultado_local.aceita:
+                motivo = diagnostico["motivo"]
+                await self.estado.finalizar_oferta(job, "descartada", resultado=motivo,
+                                                   diagnostico=diagnostico)
+                log("oferta_descartada", canal_id=job["canal_id"], msg_id=job["msg_id"],
+                    motivo=motivo, diagnostico=diagnostico)
                 return
-            await self.estado.decidir(job, produto, gerar_hash(produto))
+            produto = resultado_local.extracao.produto
+            hash_oferta = gerar_hash(produto)
+            await self.estado.decidir(job, produto, hash_oferta, diagnostico=diagnostico)
+            log("oferta_decidida", canal_id=job["canal_id"], msg_id=job["msg_id"],
+                motivo=diagnostico["motivo"], regra=diagnostico["regra"])
         else:
             produto = json.loads(job["decisao"])
-        hash_oferta = gerar_hash(produto)
+            # O hash persistido pertence à decisão, não à versão do extrator ou
+            # ao snapshot corrente. Fallback só para decisão legada sem hash.
+            hash_oferta = job["hash"] if job.get("hash") is not None else gerar_hash(produto)
         if not await self.estado.reservar_hash(job, hash_oferta):
             raise Aguardar(self.config.retry_base, "hash_em_reconciliacao")
-        registro = {**produto, "canal_origem": job["remoto_canal"], "telegram_msg_id": job["msg_id"],
-                    "raw_text": job["texto"][:2000], "data_oferta": job["data_origem"], "foto_url": None}
+        registro = {campo: produto[campo] for campo in CAMPOS_PRODUTO if campo in produto}
+        registro.update(canal_origem=job["remoto_canal"], telegram_msg_id=job["msg_id"],
+                        raw_text=job["texto"][:2000], data_oferta=job["data_origem"],
+                        foto_url=None, dedup_hash=hash_oferta)
         aliases = await self.estado.aliases(job["canal_id"])
         async def ao_vincular(produto_id: int) -> None:
             await self.estado.vincular(job, produto_id)

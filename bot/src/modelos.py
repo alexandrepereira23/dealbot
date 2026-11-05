@@ -21,6 +21,7 @@ class Mensagem:
     tem_foto: bool = False
     origem: str = "live"
     recebido_em: float = field(default_factory=time.time)
+    contexto: dict = field(default_factory=dict)
 
 
 class FalhaLocal(RuntimeError):

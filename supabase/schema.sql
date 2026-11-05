@@ -60,6 +60,58 @@ create table if not exists public.filtros (
     criado_em         timestamptz default now()
 );
 
+-- ETAPA 2 FILTROS: início do bloco aditivo/idempotente.
+-- Aplicar primeiro; depois bot/backend compatíveis e, por último, frontend.
+-- Falha no preflight aborta o bloco inteiro. Não limpa/reinterpreta dados legados.
+do $etapa2_filtros$
+begin
+    alter table public.filtros
+        add column if not exists tipo_regra text not null default 'interesse',
+        add column if not exists modo_palavras text not null default 'qualquer';
+
+    if exists (
+        select 1 from public.filtros
+        where tipo_regra is null or tipo_regra not in ('interesse', 'bloqueio_global')
+           or modo_palavras is null or modo_palavras not in ('qualquer', 'todas')
+           or (tipo_regra = 'bloqueio_global' and (
+               coalesce(cardinality(palavras_bloqueio), 0) = 0
+               or palavras_chave is distinct from '{}'::text[]
+               or categoria is not null or preco_max is not null
+           ))
+    ) then
+        raise exception 'Etapa 2: filtros incompatíveis; migração interrompida sem alterar regras'
+            using hint = 'Inspecione tipos/modos e inclusões de bloqueios globais; corrija somente com autorização e execute novamente.';
+    end if;
+
+    alter table public.filtros
+        alter column tipo_regra set default 'interesse',
+        alter column tipo_regra set not null,
+        alter column modo_palavras set default 'qualquer',
+        alter column modo_palavras set not null;
+
+    if not exists (select 1 from pg_constraint
+                   where conrelid = 'public.filtros'::regclass and conname = 'filtros_tipo_regra_check') then
+        alter table public.filtros add constraint filtros_tipo_regra_check
+            check (tipo_regra in ('interesse', 'bloqueio_global'));
+    end if;
+    if not exists (select 1 from pg_constraint
+                   where conrelid = 'public.filtros'::regclass and conname = 'filtros_modo_palavras_check') then
+        alter table public.filtros add constraint filtros_modo_palavras_check
+            check (modo_palavras in ('qualquer', 'todas'));
+    end if;
+    if not exists (select 1 from pg_constraint
+                   where conrelid = 'public.filtros'::regclass and conname = 'filtros_global_consistente_check') then
+        alter table public.filtros add constraint filtros_global_consistente_check
+            check (tipo_regra <> 'bloqueio_global' or (
+                coalesce(cardinality(palavras_bloqueio), 0) > 0
+                and palavras_chave is not null and palavras_chave = '{}'::text[]
+                and categoria is null and preco_max is null
+            ));
+    end if;
+end
+$etapa2_filtros$;
+-- ETAPA 2 FILTROS: fim. Rollback preserva colunas/dados; código antigo não entende globais/todas.
+
 -- 3. CANAIS monitorados
 create table if not exists public.canais (
     id        bigint generated always as identity primary key,

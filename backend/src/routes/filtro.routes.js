@@ -1,11 +1,14 @@
 import { Router } from "express";
 import { FiltroController } from "../controllers/filtro.controller.js";
 
-const router = Router();
+export function criarFiltroRouter(controller = FiltroController) {
+  const router = Router();
 
-router.get("/", FiltroController.listar);
-router.post("/", FiltroController.criar);
-router.put("/:id", FiltroController.atualizar);
-router.delete("/:id", FiltroController.remover);
+  router.get("/", controller.listar);
+  router.post("/", controller.criar);
+  router.put("/:id", controller.atualizar);
+  router.delete("/:id", controller.remover);
+  return router;
+}
 
-export default router;
+export default criarFiltroRouter();

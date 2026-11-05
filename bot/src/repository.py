@@ -16,6 +16,11 @@ from .politica import configurar_limites_http
 
 JANELA_DEDUP_HORAS = 48
 QUANTIDADE_TRAVAS = 128
+CAMPOS_PRODUTO = ("titulo", "preco", "preco_original", "cupom", "link", "categoria")
+CAMPOS_REMOTOS = (*CAMPOS_PRODUTO, "canal_origem", "telegram_msg_id", "raw_text",
+                  "data_oferta", "foto_url", "dedup_hash")
+COLUNAS_FILTROS = ("id,nome,palavras_chave,palavras_bloqueio,categoria,preco_max,ativo,"
+                  "tipo_regra,modo_palavras")
 
 
 @dataclass(frozen=True)
@@ -75,8 +80,10 @@ class RepositorioSupabase:
         return chaves
 
     async def carregar_filtros(self) -> list[dict]:
+        # Colunas explícitas comprovam prontidão: schema antigo não pode parecer
+        # uma configuração válida sem as novas regras de veto.
         return await self._executar(
-            self._client.table("filtros").select("*").eq("ativo", True)
+            self._client.table("filtros").select(COLUNAS_FILTROS).eq("ativo", True)
         )
 
     async def listar_canais(self) -> list[str]:
@@ -160,7 +167,10 @@ class RepositorioSupabase:
         return "retomado" if mesmo_evento else "duplicado"
 
     async def salvar_oferta(self, registro: dict, aliases: list[str],
-                            produto_id: int | None = None, ao_vincular: Any = None) -> ResultadoOferta:
+                             produto_id: int | None = None, ao_vincular: Any = None) -> ResultadoOferta:
+        # A fronteira remota não aceita os diagnósticos/candidatos internos,
+        # inclusive quando um chamador recebe uma decisão de versão anterior.
+        registro = {campo: registro[campo] for campo in CAMPOS_REMOTOS if campo in registro}
         canal = registro.get("canal_origem")
         msg_id = registro.get("telegram_msg_id")
         if not isinstance(canal, str) or not canal.strip():
@@ -168,7 +178,12 @@ class RepositorioSupabase:
         if not isinstance(msg_id, int) or isinstance(msg_id, bool) or msg_id <= 0:
             raise ValueError("A oferta precisa de um identificador de mensagem válido")
         chaves = self._aliases(canal, aliases)
-        hash_oferta = gerar_hash(registro)
+        hash_oferta = registro.get("dedup_hash")
+        if hash_oferta is None:
+            # Chamadas legadas sem checkpoint usam os mesmos dados congelados.
+            hash_oferta = gerar_hash(registro)
+        if not isinstance(hash_oferta, str) or not re.fullmatch(r"[0-9a-f]{32}", hash_oferta):
+            raise ValueError("Hash persistido da oferta inválido")
         trava = self._travas[int(hash_oferta, 16) % QUANTIDADE_TRAVAS]
         async with trava:
             if produto_id is not None:

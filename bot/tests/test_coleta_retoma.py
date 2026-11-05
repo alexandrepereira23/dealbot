@@ -405,7 +405,7 @@ class TestColetaRetoma(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(await self.estado.evento(CANAL_ID, 101))
 
     @unittest.skipUnless(TEM_TELETHON, "Telethon não instalado; contrato raw necessário")
-    async def test_raw_bootstrap_data_snapshot_superior_e_texto_formatado(self) -> None:
+    async def test_raw_bootstrap_data_snapshot_superior_e_codigo_no_contexto(self) -> None:
         from telethon.tl.types import MessageEntityCode
 
         client = cliente_historico()
@@ -422,7 +422,8 @@ class TestColetaRetoma(unittest.IsolatedAsyncioTestCase):
         mensagens, esgotou = pagina
         self.assertEqual(canal, original, "O adaptador não pode alterar o snapshot do chamador")
         self.assertEqual([m.msg_id for m in mensagens], list(range(1002, 1051)))
-        self.assertEqual(mensagens[0].texto, "`CUPOM123`")
+        self.assertEqual(mensagens[0].texto, "CUPOM123")
+        self.assertEqual(mensagens[0].contexto["codigos"], [{"offset": 0, "length": 8}])
         self.assertTrue(esgotou)
         self.assertEqual(pagina.cursor, 1050)
         self.assertEqual(client.requisicoes, [(0, -100, 100)])
@@ -469,7 +470,7 @@ class TestColetaRetoma(unittest.IsolatedAsyncioTestCase):
         canal = await self.estado.canal(CANAL_ID)
         self.assertEqual((canal["cursor"], canal["limite"], canal["bootstrap"]), (1, 10, 123))
         versao = await self.estado._executar(lambda: self.estado.db.execute("PRAGMA user_version").fetchone()[0])
-        self.assertEqual(versao, 4)
+        self.assertEqual(versao, 5)  # Etapa 2 acrescenta contexto/diagnóstico sem perder a migração v3.
         await self.estado.falhar_resolucao("@CANAL", time.time() + 120, "FloodWait")
         self.assertEqual((await self.estado.resolucao("canal"))["tentativas"], 1)
 

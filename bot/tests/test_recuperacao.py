@@ -155,12 +155,13 @@ class TestRecuperacao(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTransporte(unittest.IsolatedAsyncioTestCase):
-    async def test_envelope_preserva_precedencia_do_texto_formatado_original(self) -> None:
+    async def test_envelope_preserva_texto_bruto_em_vez_de_markup(self) -> None:
         from datetime import datetime, timezone
         msg = SimpleNamespace(id=1, date=datetime.now(timezone.utc), photo=None,
             text="Notebook R$ 99,90 `CUPOM123`", message="Notebook R$ 99,90 CUPOM123")
         envelope = Telegram.envelope(msg, -100111, "canal", "live")
-        self.assertEqual(envelope.texto, msg.text)
+        self.assertEqual(envelope.texto, msg.message)
+        self.assertEqual(envelope.contexto, {"versao": 1, "links": [], "codigos": [], "exclusoes": []})
 
     async def test_fila_overflow_e_limites_reais_instalados_em_cliente_fake(self) -> None:
         evento = asyncio.Event()

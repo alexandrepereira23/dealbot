@@ -2,12 +2,79 @@
 
 import asyncio
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from .estado import EstadoLocal
 from .modelos import ErroPermanente, Mensagem
+
+
+def _limites_utf16(texto: str) -> dict[int, int]:
+    """Mapeia somente fronteiras completas: nunca cortar um emoji astral ao meio."""
+    limites = {0: 0}
+    unidades = 0
+    for indice, caractere in enumerate(texto, 1):
+        unidades += 2 if ord(caractere) > 0xFFFF else 1
+        limites[unidades] = indice
+    return limites
+
+
+def _span_python(entidade: Any, limites: dict[int, int]) -> dict | None:
+    offset, length = getattr(entidade, "offset", None), getattr(entidade, "length", None)
+    if type(offset) is not int or type(length) is not int or offset < 0 or length <= 0:
+        return None
+    inicio, fim = limites.get(offset), limites.get(offset + length)
+    if inicio is None or fim is None:
+        return None
+    return {"offset": inicio, "length": fim - inicio}
+
+
+def _contexto(msg: Any, texto: str) -> dict:
+    """Só metadados locais; spans JSON usam índices Python do texto bruto."""
+    contexto = {"versao": 1, "links": [], "codigos": [], "exclusoes": []}
+    entidades = getattr(msg, "entities", None) or []
+    if entidades:
+        from telethon import utils
+        from telethon.tl.types import MessageEntityCode, MessageEntityPre, MessageEntityTextUrl, MessageEntityUrl
+
+        limites = _limites_utf16(texto)
+        links_validos = []
+        for entidade in entidades:
+            if not isinstance(entidade, (MessageEntityCode, MessageEntityPre, MessageEntityTextUrl, MessageEntityUrl)):
+                continue
+            span = _span_python(entidade, limites)
+            if span is None:
+                continue
+            if isinstance(entidade, (MessageEntityCode, MessageEntityPre)):
+                contexto["codigos"].append(span)
+                continue
+            links_validos.append((entidade, span))
+        # Uma conversão UTF-16 por conjunto, em vez de reprocessar todo o
+        # texto para cada entidade. Helper público, sem .text/unparse.
+        try:
+            rotulos = utils.get_inner_text(texto, [e for e, _ in links_validos]) if links_validos else []
+        except (UnicodeError, ValueError, IndexError):
+            rotulos = []
+        for (entidade, span), rotulo in zip(links_validos, rotulos):
+            url = entidade.url if isinstance(entidade, MessageEntityTextUrl) else rotulo
+            if isinstance(url, str):
+                contexto["links"].append({"url": url, "origem": "entidade", "rotulo": rotulo, **span})
+                # TextUrl pode envolver o próprio nome do produto: excluir
+                # indiscriminadamente seu rótulo apagaria a única descrição.
+                # URLs visíveis não descrevem produto; chamadas/rodapés com
+                # rótulo oculto são classificados pelo extrator normalmente.
+                if isinstance(entidade, MessageEntityUrl):
+                    contexto["exclusoes"].append(dict(span))
+    markup = getattr(msg, "reply_markup", None)
+    for linha in getattr(markup, "rows", None) or []:
+        for botao in getattr(linha, "buttons", None) or []:
+            url = getattr(botao, "url", None)
+            if isinstance(url, str):
+                rotulo = getattr(botao, "text", "")
+                contexto["links"].append({"url": url, "origem": "botao",
+                                          "rotulo": rotulo if isinstance(rotulo, str) else ""})
+    return contexto
 
 
 @dataclass(frozen=True)
@@ -56,11 +123,14 @@ class Telegram:
         data = getattr(msg, "date", None)
         if data is None:
             raise ValueError("mensagem_sem_data")
-        # Preservar a precedência anterior: Telethon .text inclui formatação de
-        # entidades (ex.: código de cupom), enquanto .message é texto sem markup.
-        texto = getattr(msg, "text", None) or getattr(msg, "message", "") or ""
+        # .message é bruto, inclusive quando vazio. .text só atende fakes legados.
+        texto = getattr(msg, "message", None)
+        if not isinstance(texto, str):
+            texto = getattr(msg, "text", "")
+            if not isinstance(texto, str):
+                texto = ""
         return Mensagem(canal_id, msg.id, username, texto, data.isoformat(),
-                        bool(getattr(msg, "photo", None)), origem)
+                        bool(getattr(msg, "photo", None)), origem, contexto=_contexto(msg, texto))
 
     async def mais_nova(self, canal_id: int) -> int:
         mensagens = await asyncio.wait_for(self.client.get_messages(await self._peer(canal_id), limit=1), self.timeout)
@@ -69,7 +139,7 @@ class Telegram:
     async def pagina(self, canal: dict, quantidade: int) -> PaginaHistorico:
         """Um GetHistory por página; nunca esconder paginação/retries no iterador."""
         from telethon.tl.functions.messages import GetHistoryRequest
-        from telethon.tl.types import Message, MessageEmpty
+        from telethon.tl.types import MessageEmpty
 
         tamanho = min(quantidade, 100)
         if tamanho <= 0:
@@ -103,13 +173,7 @@ class Telegram:
             # O offset por data é reforçado localmente no primeiro bootstrap.
             if inicio is not None and msg.date is not None and msg.date < inicio:
                 continue
-            envelope = self.envelope(msg, canal["canal_id"], canal["username"])
-            # Respostas raw não passam por _finish_init do iterador. Preservar
-            # .text formatado usando o parse_mode público, sem aquele helper privado.
-            modo = getattr(self.client, "parse_mode", None)
-            if isinstance(msg, Message) and modo is not None:
-                envelope = replace(envelope, texto=modo.unparse(msg.message or "", msg.entities or []))
-            mensagens.append(envelope)
+            mensagens.append(self.envelope(msg, canal["canal_id"], canal["username"]))
         # Resposta curta não é fim. Só o trecho retornado (incluindo tombstones)
         # avança; a próxima RPC acontece DEPOIS do commit/pacing desta página.
         return PaginaHistorico(mensagens, cursor == canal["limite"], cursor)

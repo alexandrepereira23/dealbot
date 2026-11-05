@@ -1,0 +1,24 @@
+[
+  {
+    "id": 1,
+    "nome": "SSD Kingston até 350",
+    "tipo_regra": "interesse",
+    "modo_palavras": "todas",
+    "palavras_chave": ["SSD", "Kingston"],
+    "palavras_bloqueio": [],
+    "categoria": "eletronicos",
+    "preco_max": 350,
+    "ativo": true
+  },
+  {
+    "id": 2,
+    "nome": "Vetar usados",
+    "tipo_regra": "bloqueio_global",
+    "modo_palavras": "qualquer",
+    "palavras_chave": [],
+    "palavras_bloqueio": ["usado", "recondicionado"],
+    "categoria": null,
+    "preco_max": null,
+    "ativo": true
+  }
+]

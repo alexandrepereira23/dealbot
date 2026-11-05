@@ -222,7 +222,8 @@ Logs são JSON, sem texto completo, tokens ou session string. No ambiente onde
 o serviço estiver instalado, `journalctl -u dealbot -f` permite correlacionar
 `canal_id`, `msg_id`, `produto_id`, `origem`, `tentativa`, `estado` e `proxima`:
 
-- `oferta_descartada`: motivo `sem_produto` ou `filtro`;
+- `oferta_descartada`: diagnóstico local com motivo de extração ou rejeições por
+  regra; `oferta_decidida` identifica o aceite antes do primeiro efeito remoto;
 - `mensagem_ignorada`: canal inativo ou geração encerrada antes da aceitação
   durável; trabalho já gravado permanece processável;
 - `oferta_duplicata`/`oferta_disponivel`: efeito confirmado, antes de mídia;
@@ -264,6 +265,19 @@ final, workers máximos e atraso de heartbeat. Mede antes do shutdown, sem
 esperar drenar fotos; instrumentação adiciona custo e amostras de resultados
 crescem com o tamanho do cenário. **Não valida desempenho real da VPS, Telegram,
 Supabase nem renderização do frontend.**
+
+Se um teste assíncrono exceder seu watchdog, não aumente o prazo nem desabilite
+o modo debug para obter verde. Separe fila/execução SQLite de retorno ao loop
+e verifique estados/fatalidade dos workers. No WSL, confirme o filesystem de
+cada parte: a inbox temporária pode estar em ext4 enquanto fontes/venv em
+`/mnt/c` usam 9p. A captura de stacks do debug consulta metadados das fontes;
+um perfil local encontrou custo dominante em `linecache.checkcache`/`stat`,
+não na execução SQL. Isso não prova a causa de todo timeout: preserve a falha,
+registre o ambiente e use controles de agendamento, sem mudar `WAL`/`FULL`,
+assertions ou dados para mascará-la. Evidências e limites constam no PRD da etapa 2.
+Os controles de refresh em `python -m unittest tests.test_progresso_configuracao -v`
+usam barreiras de eventos, dois workers e SQLite real para exercitar janelas de
+notificação/SELECT/commit. Não reproduzem nem explicam o timeout histórico.
 
 ### 4. Backend
 ```bash
@@ -308,3 +322,175 @@ O `bot/src/extractor.py` estrutura cada mensagem por regex/heurística (preço,
 cupom, link, categoria por palavras-chave). Não há dependência de IA nem chave
 externa. As categorias suportadas estão fixas em `extractor.py` e em
 `frontend/lib/types.ts` (`CATEGORIAS`) — mantenha as duas em sincronia.
+
+### Etapa 2: extração contextual e regras previsíveis
+
+O título é a linha descritiva do produto, não a primeira chamada promocional.
+Marca/modelo/capacidade e variantes após hífens são preservados. Filtros e
+categorias usam o **conteúdo descritivo completo**, sem URLs, códigos de cupom
+ou rodapés identificados de divulgação. Caixa, acentos e espaços são
+normalizados; palavras/frases usam limites de palavras, sem fuzzy amplo.
+Uma frase deve aparecer junta: `memória ram` não equivale a termos espalhados.
+
+Regras ativas têm dois tipos:
+
+- **`interesse`** (default legado): basta passar em uma regra. Dentro dela,
+  categoria, teto e palavras são condições combinadas. `modo_palavras` é
+  `qualquer` (default legado) ou `todas`. Palavras-chave vazias não restringem.
+  Bloqueios da regra continuam por **qualquer termo e somente naquela regra**,
+  independentemente do modo de inclusão; outro interesse pode aceitar.
+- **`bloqueio_global`**: avaliado antes de interesses, veta sem que outro
+  interesse possa autorizar. Lista de bloqueios deve ser não vazia; o modo
+  qualquer/todas aplica-se a ela. Inclusões devem estar vazias, categoria/teto
+  nulos. API rejeita combinações incompatíveis; a tela explica e limpa os
+  campos inaplicáveis ao trocar o tipo.
+
+Sem interesses ativos, ofertas válidas passam se nenhum global vetar. Sem
+regras ativas, ofertas válidas passam. Isso **não** transforma falha de
+configuração em lista vazia: sem snapshot válido, aguarda; erro posterior
+preserva o último válido e sua idade. Mudanças valem só para decisões futuras.
+Editar conteúdo de regra pausada não a ativa; PUT parcial preserva omitidos,
+enquanto `null`/`[]` explicitamente removem a condição permitida.
+
+API valida as sete categorias (não `todos`), enums, nome 1–100 caracteres,
+até 50 entradas por lista, termos/frases de 1–100 caracteres após trim e
+duplicatas normalizadas. Teto aceita número finito de 0 a 99.999.999,99,
+com até dois decimais. Campo omitido é diferente de zero. Preço desconhecido
+rejeita somente a regra com teto, com `preco_desconhecido`; outra sem teto
+pode aceitar. Zero explícito/gratuidade identificada é conhecido, não ausente.
+
+#### Dinheiro, links, cupons e limitações
+
+- Atual/final/à vista explícito tem precedência; anterior exige marcador
+  como `de`/`antes`. Frete, parcela, valor de desconto e compra mínima não são
+  preço atual/anterior. Não se deriva total de parcelas nesta versão.
+- `De R$ 399,90 por R$ 299,90` → 299,90/399,90; `Por R$ 299,90 / Frete
+  R$ 15,00` → 299,90/anterior ausente; `10x de R$ 99,90 / à vista R$ 899,00`
+  → 899,00. Desconto/compra mínima ou `20% OFF` isolados não fornecem preço.
+- Condição/modelo após preço inline continuam descritivos: `SSD R$ 299,90 -
+  USADO` permanece sujeito ao veto de usado. Frete com `de`/`por` e pontuação
+  (`Frete: grátis`, `Frete – grátis`) não fornece preço atual/anterior do produto.
+  Na descrição, remove-se o serviço reconhecido, não a condição que o segue:
+  `Frete incluso, USADO` também preserva o veto de usado.
+- Formatos brasileiros: `R$ 1.234,56`, `R$ 299,90`, `R$ 299` e espaços
+  não separáveis; `R$ 1.234` significa 1234,00 por agrupamento brasileiro.
+  `R$ 1,234`, `R$ 12.34` ou separadores inválidos ficam desconhecidos e
+  explicados. Comparações internas usam centavos; JSON/API continuam number/null.
+- Só links públicos HTTP/HTTPS: candidatos do texto, entidades e botões são
+  capturados sem nova consulta de enriquecimento. Links comerciais/contextuais
+  vencem divulgação de grupo/rede social; encurtados são mantidos sem redirects.
+  Caixa do caminho/query e parâmetros legítimos são preservados.
+- Cupom exige evidência contextual, como `Use o cupom: AbC123`; preserva a
+  grafia. Backticks ou `DESCONTO` isolados não fabricam cupom. Cupom ambíguo
+  permanece nulo sem invalidar uma oferta independente.
+- Mensagens curtas podem ser ofertas; divulgação genérica não é produto.
+  Múltiplos produtos/preços independentes detectados são ambíguos: não escolher
+  o menor. Mantém-se **uma oferta por mensagem**, sem cobertura completa de
+  listas, álbuns ou edições.
+- Mudança de linha/especificação não prova segundo produto: `Capacidade 1 TB`
+  e um campo simples `Memória RAM 16 GB` entre valores do notebook continuam
+  sua descrição. Identificação própria, como `Memória RAM 16 GB Kingston Fury`
+  seguida de preço, ou marca antes de outro objeto (`Logitech Headset`), é
+  evidência de oferta independente. Essas heurísticas locais não prometem
+  reconhecer toda especificação/formato possível; conflitos não viram menor preço.
+- Dois objetos com preços próprios separados por cláusulas na mesma linha
+  também são múltiplos: `SSD R$ 350 / Headset por R$ 149` não gera um card
+  composto. Relações de/por, parcelas e frete do mesmo produto não criam objetos.
+  Campos rotulados do notebook, como `Processador: Intel Core i5`, sem preço
+  próprio, continuam especificação. Frete/parcela/anterior dentro do campo não
+  é preço próprio; memória com marca/modelo residual e preço seguinte continua
+  oferta independente, mesmo escrita com dois-pontos.
+- Cadeira gamer é casa, headset gamer é eletrônico e jogo PS5 é games;
+  incerteza vira outros. Há ponto de extensão por ID/username de canal, mas
+  nenhum formato específico foi inventado: exemplos/testes são **sintéticos**.
+- Deduplicação/hash e janela de 48h continuam os mesmos. O hash antigo ainda
+  normaliza a caixa da URL e possui outras limitações de identidade; corrigir
+  isso, resolver redirects e produto canônico pertencem à etapa 3. Não há
+  recálculo histórico, reabertura em massa ou nova avaliação de decisão congelada.
+
+#### Prévia offline e diagnóstico
+
+Em `bot/`, sem `.env`, tokens, Supabase ou Telegram reais:
+
+```bash
+python -m previa --mensagem exemplos/etapa02/mensagem.txt --filtros exemplos/etapa02/filtros.json
+python -m medir_extracao
+python -m medir_extracao --limites  # também 10 regras, 50 termos por lista, 100 caracteres
+python -m unittest tests.test_filtros_etapa2 tests.test_decisoes_etapa2 -v
+```
+
+Os arquivos de exemplo acima são sintéticos. Prévia usa a mesma extração e
+avaliação dos workers, retorna JSON com produto, descrição de avaliação,
+aceite e motivos. Código de saída: 0 para avaliação válida (inclusive rejeição),
+2 para entrada/configuração inválida e 1 para falha técnica. Ela deliberadamente
+mostra os dados locais fornecidos: não publique sua saída com mensagens privadas.
+O benchmark de corpus mede CPU/local, não latência real de Telegram/lojas/VPS.
+
+`--contexto arquivo.json` é opcional. Formato normalizado: `versao: 1`,
+`links: [{url, origem: "entidade" | "botao", rotulo, offset?, length?}]`,
+`codigos: [{offset, length}]`, `exclusoes: [{offset, length}]`; admite
+`canal_id` inteiro e `username` para seleção do adaptador. Esses offsets são
+índices **Python no texto bruto**; a fronteira Telethon converte UTF-16 usando
+o SDK, inclusive com emoji antes da entidade. Não use offsets do `.text`
+formatado. Envelopes antigos sem contexto continuam legíveis, sem refetch.
+
+Diagnóstico local registra códigos/IDs de regras e razões por regra:
+`aceita_por_regra`, `bloqueio_global`, `bloqueio_da_regra`, `palavra_ausente`,
+`categoria_divergente`, `preco_acima_do_limite`, `preco_desconhecido`,
+`preco_ambiguo`, `sem_evidencia_de_oferta` e situações específicas de extração.
+Logs não contêm texto/código/termos privados nem URLs completas. Descrição,
+candidatos e diagnóstico não são colunas remotas: há projeção explícita de
+campos de produto. Aprovação e diagnóstico são congelados antes da rede;
+descarte legítimo/ambiguidade terminaliza sem retries infinitos.
+
+#### Migrações e atualização futura — não aplicadas remotamente
+
+1. Preservar backup consistente do estado SQLite e conferir dados/schema.
+   O script `supabase/schema.sql` contém o bloco aditivo da etapa 2: novos
+   campos de filtros, defaults e constraints. Não basta `CREATE TABLE IF NOT
+   EXISTS` para atualizar banco antigo. Legado incompatível exige diagnóstico
+   e correção autorizada, nunca apagamento/reinterpretação automática.
+2. Parar o coletor antigo e, em operação futura explicitamente autorizada,
+   aplicar primeiro o bloco SQL da etapa 2. Esta entrega só prepara/testa
+   localmente o SQL: **não o executa no Supabase**.
+3. Atualizar backend e bot antes de habilitar a nova UI. Startup do bot migra
+   SQLite aditivamente para v5; não trocar/apagar `BOT_STATE_DIR`. IDs, pendências,
+   decisões/hash, mídia e fronteiras são preservados. Decisões existentes
+   continuam sendo reconciliadas sem reextração, mesmo sem configuração nova.
+4. Só então atualizar frontend e conferir CRUD/tipos/modos/pausados. Não manter
+   bot antigo lendo bloqueio global como se fosse interesse permissivo.
+5. Schema incompleto produz erro explícito (API) e refresh inválido (bot), sem
+   fingir sucesso ou descartar novos campos. Sem snapshot válido aguarda; com
+   snapshot válido conserva o último. Consultas exigem as novas colunas.
+
+Rollback: parar coletor, preservar os dados e usar versão compatível. Colunas
+aditivas podem permanecer, mas o stack antigo ignora globais/`todas`; voltar
+a ele com essas regras é inseguro. Não desativar vetos nem apagar fila para
+reverter. Código antigo pode recusar SQLite v5; restauração consistente exige
+decisão própria e perde eventos posteriores ao backup. Nunca iniciar dois
+coletores. Sem deploy/migração remota automática.
+
+Verificações locais adicionais:
+
+```bash
+# Em backend/ (Node; sem Supabase real)
+npm test
+# Requer psql e banco LOCAL DESCARTÁVEL vazio, com nome protegido pelo runner:
+DEALBOT_TEST_POSTGRES_URL=postgresql://localhost:5432/dealbot_teste npm run test:sql
+# Alternativa: PGlite instalado fora do projeto, instância Postgres em memória:
+DEALBOT_TEST_PGLITE_MODULE=/caminho/absoluto/node_modules/@electric-sql/pglite/dist/index.js npm run test:sql
+
+# Em frontend/ (API/Auth e hooks falsos, componente real renderizado; não é browser E2E)
+npm test
+npm run lint
+npx --no-install tsc --noEmit --incremental false
+npm run build
+```
+
+Use somente um dos dois modos SQL. O runner recusa URL remota, parâmetros e
+nome de banco não protegido; transações com rollback preservam o ambiente de
+teste. A execução desta entrega usou PostgreSQL 18.6/PGlite 0.5.11 temporário;
+não valida extensões/RLS/infraestrutura do Supabase real. PGlite não é dependência
+de produção. No build, usar variáveis `NEXT_PUBLIC_*` fictícias de teste, não
+credenciais. Resultados, comparação com a base e limitações estão no PRD
+`docs/sdd/incrementos/dealbot-etapa-02-extracao-filtros.md`.

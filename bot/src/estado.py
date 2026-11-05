@@ -76,9 +76,18 @@ class EstadoLocal:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA busy_timeout=2000")
         versao = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if versao not in (0, 1, 2, 3, 4):
+        if versao not in (0, 1, 2, 3, 4, 5):
             raise FalhaLocal("versao_local_nao_suportada")
-        self.db.executescript("""
+        self._migrar()
+        if os.name != "nt":
+            for caminho in self.diretorio.iterdir():
+                if caminho.is_file():
+                    caminho.chmod(0o600)
+
+    def _migrar(self) -> None:
+        """DDL, defaults e versão confirmados juntos; falha conserva o banco anterior."""
+        db = self._conexao()
+        schema = """
             CREATE TABLE IF NOT EXISTS canais (
                 canal_id INTEGER PRIMARY KEY, username TEXT NOT NULL, access_hash TEXT,
                 aliases TEXT NOT NULL DEFAULT '[]', cursor INTEGER NOT NULL DEFAULT 0,
@@ -92,6 +101,7 @@ class EstadoLocal:
                 estado TEXT NOT NULL DEFAULT 'pendente', tentativas INTEGER NOT NULL DEFAULT 0,
                 proxima REAL NOT NULL DEFAULT 0, erro TEXT, decisao TEXT, hash TEXT,
                 produto_id INTEGER, resultado TEXT, finalizado_em REAL, disponibilizado_em REAL,
+                contexto TEXT NOT NULL DEFAULT '{}', diagnostico TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(canal_id,msg_id)
             );
             CREATE INDEX IF NOT EXISTS ix_eventos_elegiveis ON eventos(estado,proxima,origem,recebido_em);
@@ -110,21 +120,30 @@ class EstadoLocal:
                 username TEXT PRIMARY KEY, proxima REAL NOT NULL DEFAULT 0,
                 tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT
             );
-        """)
-        if "disponibilizado_em" not in {r[1] for r in self.db.execute("PRAGMA table_info(eventos)")}:
-            self.db.execute("ALTER TABLE eventos ADD COLUMN disponibilizado_em REAL")
-        if "falha_apos_limpeza" not in {r[1] for r in self.db.execute("PRAGMA table_info(midias)")}:
-            self.db.execute("ALTER TABLE midias ADD COLUMN falha_apos_limpeza TEXT")
-        if "geracao" not in {r[1] for r in self.db.execute("PRAGMA table_info(canais)")}:
-            self.db.execute("ALTER TABLE canais ADD COLUMN geracao INTEGER NOT NULL DEFAULT 0")
-        self.db.execute("PRAGMA user_version=4")
-        with self.db:
-            self.db.execute("UPDATE eventos SET estado='retry' WHERE estado='processando'")
-            self.db.execute("UPDATE midias SET estado='retry' WHERE estado='processando'")
-        if os.name != "nt":
-            for caminho in self.diretorio.iterdir():
-                if caminho.is_file():
-                    caminho.chmod(0o600)
+        """
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            # São instruções DDL constantes, sem dados interpolados. executescript
+            # faria commit implícito antes do script e romperia o rollback do DDL.
+            for instrucao in schema.split(";"):
+                if instrucao.strip():
+                    db.execute(instrucao)
+            for tabela, coluna, definicao in (
+                ("eventos", "disponibilizado_em", "REAL"),
+                ("midias", "falha_apos_limpeza", "TEXT"),
+                ("canais", "geracao", "INTEGER NOT NULL DEFAULT 0"),
+                ("eventos", "contexto", "TEXT NOT NULL DEFAULT '{}'"),
+                ("eventos", "diagnostico", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                if coluna not in {r[1] for r in db.execute(f"PRAGMA table_info({tabela})")}:
+                    db.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}")
+            db.execute("UPDATE eventos SET estado='retry' WHERE estado='processando'")
+            db.execute("UPDATE midias SET estado='retry' WHERE estado='processando'")
+            db.execute("PRAGMA user_version=5")
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
 
     def _conexao(self) -> sqlite3.Connection:
         if self.db is None:
@@ -135,9 +154,10 @@ class EstadoLocal:
         db = self._conexao()
         username = normalizar_username(msg.username) or str(msg.canal_id)
         res = db.execute("""INSERT OR IGNORE INTO eventos
-            (canal_id,msg_id,username,remoto_canal,texto,data_origem,recebido_em,origem,tem_foto)
-            VALUES (?,?,?,?,?,?,?,?,?)""", (msg.canal_id, msg.msg_id, username, username,
-            msg.texto, msg.data_origem, msg.recebido_em, msg.origem, int(msg.tem_foto)))
+            (canal_id,msg_id,username,remoto_canal,texto,data_origem,recebido_em,origem,tem_foto,contexto)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""", (msg.canal_id, msg.msg_id, username, username,
+            msg.texto, msg.data_origem, msg.recebido_em, msg.origem, int(msg.tem_foto),
+            json.dumps(msg.contexto, allow_nan=False)))
         novo = res.rowcount == 1
         if msg.origem == "live":
             db.execute("""UPDATE eventos SET origem='live' WHERE canal_id=? AND msg_id=?
@@ -306,11 +326,15 @@ class EstadoLocal:
                 return resultado
         return await self._executar(op)
 
-    async def decidir(self, job: dict, produto: dict, hash_oferta: str) -> None:
+    async def decidir(self, job: dict, produto: dict, hash_oferta: str,
+                      diagnostico: dict | None = None) -> None:
         def op() -> None:
             with self._conexao():
-                self._conexao().execute("UPDATE eventos SET decisao=?,hash=? WHERE canal_id=? AND msg_id=?",
-                                         (json.dumps(produto), hash_oferta, job["canal_id"], job["msg_id"]))
+                self._conexao().execute("""UPDATE eventos SET decisao=?,hash=?,
+                    diagnostico=COALESCE(?,diagnostico) WHERE canal_id=? AND msg_id=?""",
+                    (json.dumps(produto, allow_nan=False), hash_oferta,
+                     json.dumps(diagnostico, allow_nan=False) if diagnostico is not None else None,
+                     job["canal_id"], job["msg_id"]))
         await self._executar(op)
 
     async def reservar_hash(self, job: dict, hash_oferta: str) -> bool:
@@ -331,14 +355,17 @@ class EstadoLocal:
         await self._executar(op)
 
     async def finalizar_oferta(self, job: dict, estado: str, produto_id: int | None = None,
-                               midia: bool = False, resultado: str | None = None) -> None:
+                               midia: bool = False, resultado: str | None = None,
+                               diagnostico: dict | None = None) -> None:
         def op() -> None:
             db = self._conexao()
             with db:
                 db.execute("""UPDATE eventos SET estado=?,produto_id=COALESCE(?,produto_id),
                     resultado=?,erro=CASE WHEN ?='falha_permanente' THEN ? ELSE NULL END,
-                    finalizado_em=? WHERE canal_id=? AND msg_id=?""",
-                    (estado, produto_id, resultado, estado, resultado, time.time(), job["canal_id"], job["msg_id"]))
+                    finalizado_em=?,diagnostico=COALESCE(?,diagnostico) WHERE canal_id=? AND msg_id=?""",
+                    (estado, produto_id, resultado, estado, resultado, time.time(),
+                     json.dumps(diagnostico, allow_nan=False) if diagnostico is not None else None,
+                     job["canal_id"], job["msg_id"]))
                 db.execute("DELETE FROM donos_hash WHERE canal_id=? AND msg_id=?", (job["canal_id"], job["msg_id"]))
                 if midia and produto_id is not None:
                     chave = f"{produto_id}_{job['canal_id']}_{job['msg_id']}.jpg"

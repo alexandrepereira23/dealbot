@@ -184,21 +184,28 @@ class TestSDK(unittest.IsolatedAsyncioTestCase):
         from src.extractor import extrair_produto
         from tests.test_regressoes_telethon import CANAL_ID, DATA, cliente_historico
 
-        texto = "Notebook R$ 99,90\nABC12345\nhttps://loja.test/oferta"
         with tempfile.TemporaryDirectory() as diretorio:
             estado = EstadoLocal(Path(diretorio))
             await estado.abrir()
             try:
                 await estado.configurar_canal(CANAL_ID, "canal", 1, DATA.timestamp() - 86400)
                 cliente = cliente_historico()
-                cliente.historico = [Message(id=12, peer_id=PeerChannel(111), date=DATA,
-                    message=texto, entities=[MessageEntityCode(offset=texto.index("ABC12345"), length=8)])]
-                canal = {**await estado.canal(CANAL_ID), "limite": 12}
-                mensagens, _ = await Telegram(cliente, estado).pagina(canal, 100)
-                self.assertEqual(len(mensagens), 1)
-                self.assertIn("`ABC12345`", mensagens[0].texto,
-                              "Paginação deve manter a mesma formatação .text do caminho ativo")
-                produto = await extrair_produto(mensagens[0].texto)
-                self.assertEqual(produto["cupom"], "ABC12345")
+                # Código isolado deixou de ser evidência de cupom na etapa 2;
+                # marcador explícito reconhece o código e preserva sua grafia.
+                for marcador, esperado in (("", None), ("Cupom: ", "AbC12345")):
+                    with self.subTest(marcador=marcador):
+                        texto = f"Notebook R$ 99,90\n{marcador}AbC12345\nhttps://loja.test/oferta"
+                        cliente.historico = [Message(id=12, peer_id=PeerChannel(111), date=DATA,
+                            message=texto, entities=[MessageEntityCode(offset=texto.index("AbC12345"), length=8)])]
+                        canal = {**await estado.canal(CANAL_ID), "limite": 12}
+                        mensagens, _ = await Telegram(cliente, estado).pagina(canal, 100)
+                        self.assertEqual(len(mensagens), 1)
+                        self.assertEqual(mensagens[0].texto, texto,
+                                         "Live e raw preservam texto bruto, não markup reconstruído")
+                        span = {"offset": texto.index("AbC12345"), "length": 8}
+                        self.assertEqual(mensagens[0].contexto["codigos"], [span])
+                        self.assertEqual(texto[span["offset"]:span["offset"] + span["length"]], "AbC12345")
+                        produto = await extrair_produto(mensagens[0].texto)
+                        self.assertEqual(produto["cupom"], esperado)
             finally:
                 await estado.fechar()

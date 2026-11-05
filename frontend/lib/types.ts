@@ -13,14 +13,20 @@ export type Produto = {
   data_oferta: string | null;
 };
 
+export type TipoRegra = "interesse" | "bloqueio_global";
+export type ModoPalavras = "qualquer" | "todas";
+export type Categoria = Exclude<(typeof CATEGORIAS)[number], "todos">;
+
 export type Filtro = {
   id: number;
   nome: string;
   palavras_chave: string[];
   palavras_bloqueio: string[];
-  categoria: string | null;
+  categoria: Categoria | null;
   preco_max: number | null;
   ativo: boolean;
+  tipo_regra: TipoRegra;
+  modo_palavras: ModoPalavras;
 };
 
 export const CATEGORIAS = [
