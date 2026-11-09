@@ -1,75 +1,66 @@
-import { supabaseAdmin } from "../config/supabase.js";
-import { env } from "../config/env.js";
+import { LimpezaModel } from "../models/limpeza.model.js";
 
-const BUCKET = "produtos";
-const LOTE = 500;
-
-function extrairNomeArquivo(fotoUrl) {
-  if (!fotoUrl || typeof fotoUrl !== "string") return null;
-  try {
-    const nome = new URL(fotoUrl).pathname.split("/").pop();
-    return nome && nome.endsWith(".jpg") ? nome : null;
-  } catch {
-    return null;
-  }
-}
-
-async function apagarLote(cutoffIso) {
-  const { data, error } = await supabaseAdmin
-    .from("produtos")
-    .select("id, foto_url")
-    .lt("criado_em", cutoffIso)
-    .limit(LOTE);
-
-  if (error) throw error;
-  if (!data || data.length === 0) return { linhas: 0, fotos: 0 };
-
-  const ids = data.map((r) => r.id);
-  const nomes = data
-    .map((r) => extrairNomeArquivo(r.foto_url))
-    .filter((n) => n !== null);
-
-  let fotosApagadas = 0;
-  if (nomes.length > 0) {
-    const { error: errStorage } = await supabaseAdmin.storage
-      .from(BUCKET)
-      .remove(nomes);
-    if (errStorage) {
-      console.warn(`[limpeza] falha ao remover fotos: ${errStorage.message}`);
-    } else {
-      fotosApagadas = nomes.length;
+function validarConfiguracao(config) {
+  for (const [campo, maximo] of [["retencaoHoras", 8760], ["retencaoDias", 3650],
+    ["limpezaLote", 500], ["limpezaMaxLotes", 100]]) {
+    const minimo = campo === "retencaoDias" ? 7 : 1;
+    if (!Number.isInteger(config[campo]) || config[campo] < minimo || config[campo] > maximo) {
+      throw new Error(`Configuração de limpeza inválida: ${campo}`);
     }
   }
-
-  const { error: errDel } = await supabaseAdmin
-    .from("produtos")
-    .delete()
-    .in("id", ids);
-  if (errDel) throw errDel;
-
-  return { linhas: ids.length, fotos: fotosApagadas };
+  return config;
 }
 
-export async function executarLimpeza() {
-  const inicio = Date.now();
-  const cutoff = new Date(
-    Date.now() - env.retencaoHoras * 3600_000,
-  ).toISOString();
+export function criarExecutarLimpeza(model = LimpezaModel,
+  obterConfiguracao = async () => (await import("../config/env.js")).env,
+  log = console) {
+  let emCurso = null;
 
-  try {
-    let totalLinhas = 0;
-    let totalFotos = 0;
-    while (true) {
-      const { linhas, fotos } = await apagarLote(cutoff);
-      totalLinhas += linhas;
-      totalFotos += fotos;
-      if (linhas < LOTE) break;
+  async function ciclo() {
+    const inicio = Date.now();
+    const resultado = { lotes: 0, fotos: 0, falhas: 0 };
+    try {
+      const config = validarConfiguracao(await obterConfiguracao());
+      const tentadas = new Set();
+      for (let n = 0; n < config.limpezaMaxLotes; n++) {
+        // Terminalização e intenção de remoção são remotas e duráveis antes do Storage.
+        const { urls: candidatas, processadas, continuar } = await model.prepararLote({
+          retencaoHoras: config.retencaoHoras, retencaoDias: config.retencaoDias,
+          lote: config.limpezaLote,
+        });
+        resultado.lotes++;
+        let novas = 0;
+        for (const url of candidatas) {
+          if (tentadas.has(url)) continue;
+          tentadas.add(url);
+          novas++;
+          try {
+            if (!await model.reservarRemocao(url)) continue;
+            await model.apagarFoto(url);
+            // Resposta perdida/Storage indisponível deixa a intenção para o próximo ciclo.
+            await model.confirmarRemocao(url);
+            resultado.fotos++;
+          } catch {
+            resultado.falhas++;
+            log.warn("[limpeza] mídia pendente; remoção será retomada");
+          }
+        }
+        if (!continuar || (novas === 0 && processadas === 0)) break;
+      }
+    } catch {
+      resultado.falhas++;
+      // Mensagens do banco/Storage podem conter URL/token: não registrá-las.
+      log.error("[limpeza] falha; pendências remotas preservadas");
     }
-    const duracao = Date.now() - inicio;
-    console.log(
-      `[limpeza] cutoff=${cutoff} linhas=${totalLinhas} fotos=${totalFotos} duracao=${duracao}ms`,
-    );
-  } catch (e) {
-    console.error(`[limpeza] erro: ${e?.message ?? e}`);
+    log.log(`[limpeza] lotes=${resultado.lotes} fotos=${resultado.fotos} falhas=${resultado.falhas} duracao=${Date.now() - inicio}ms`);
+    return resultado;
   }
+
+  // Boot e intervalos compartilham a mesma promessa, sem enfileirar ciclos extras.
+  return function executar() {
+    if (!emCurso) emCurso = ciclo().finally(() => { emCurso = null; });
+    return emCurso;
+  };
 }
+
+export const executarLimpeza = criarExecutarLimpeza();

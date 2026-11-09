@@ -14,7 +14,7 @@ from src.config import Config
 from src.estado import EstadoLocal
 from src.main import servir
 from src.modelos import ErroPermanente
-from src.pipeline import Pipeline
+from src.pipeline_identidade import PipelineIdentidade as Pipeline
 from src.recuperacao import Recuperacao
 from src.telegram import Telegram
 
@@ -216,7 +216,8 @@ class TestEncerramentoComFalhaDisconnect(unittest.IsolatedAsyncioTestCase):
                 client.disconnect.assert_awaited_once()
                 self.assertEqual(len(pipelines), 1)
                 pipelines[0].encerrar.assert_awaited_once()
-                self.assertEqual(len(pipelines[0].tasks), config.oferta_workers + config.midia_workers)
+                self.assertEqual(len(pipelines[0].tasks), config.oferta_workers + config.midia_workers
+                    + config.enriquecimento_workers + 1)  # Inclui enriquecimento e confirmação remota reais.
                 self.assertTrue(all(t.done() for t in pipelines[0].tasks))
             finally:
                 for pipeline in pipelines:

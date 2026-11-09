@@ -241,7 +241,8 @@ class TestContextoSQLite(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.estado.canal(CANAL), anterior["canais"][0])
         self.assertEqual(await self.estado.aliases(CANAL), ["@Canal", "antigo"])
         for antigo in anterior["eventos"]:
-            esperado = {**antigo, "contexto": "{}", "diagnostico": "{}"}
+            esperado = {**antigo, "contexto": "{}", "diagnostico": "{}",
+                        "identidade": None, "remoto_confirmado": 0, "referencia_remota": 0}
             if esperado["estado"] == "processando":
                 esperado["estado"] = "retry"
             self.assertEqual(await self.estado.evento(CANAL, antigo["msg_id"]), esperado)
@@ -249,7 +250,7 @@ class TestContextoSQLite(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.estado.resolucao("outro"), anterior["resolucoes"][0])
         donos = await self.estado._executar(lambda: [dict(r) for r in self.estado.db.execute("SELECT * FROM donos_hash")])
         self.assertEqual(donos, anterior["donos_hash"])
-        self.assertEqual(await self.estado._executar(lambda: self.estado.db.execute("PRAGMA user_version").fetchone()[0]), 5)
+        self.assertEqual(await self.estado._executar(lambda: self.estado.db.execute("PRAGMA user_version").fetchone()[0]), 6)
         job = await self.estado.obter_oferta(1000, True)
         self.assertEqual((job["msg_id"], job["decisao"], job["hash"], job["tentativas"]),
                          (8, anterior["eventos"][0]["decisao"], "hash-congelado", 3))

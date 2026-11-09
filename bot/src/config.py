@@ -32,6 +32,14 @@ class Config:
     retry_base: float = 1
     retry_max: float = 300
     shutdown_timeout: float = 25
+    janela_oferta_horas: float = 48
+    enriquecimento_workers: int = 1
+    resolucao_timeout: float = 5
+    resolucao_redirects: int = 5
+    resolucao_max_bytes: int = 65536
+    resolucao_tentativas: int = 3
+    resolucao_cache_positivo: float = 86400
+    resolucao_cache_negativo: float = 900
 
     def __post_init__(self) -> None:
         for nome, valor in vars(self).items():
@@ -49,6 +57,10 @@ class Config:
                 raise ValueError(f"{nome} precisa ser inteiro e não pode exceder {limite}")
         if self.limpeza_continuacao > 60:
             raise ValueError("BOT_LIMPEZA_CONTINUACAO_S não pode exceder 60")
+        for nome, limite in (("enriquecimento_workers", 8), ("resolucao_redirects", 10),
+                             ("resolucao_max_bytes", 1048576), ("resolucao_tentativas", 10)):
+            if type(getattr(self, nome)) is not int or getattr(self, nome) > limite:
+                raise ValueError(f"{nome} deve ser inteiro positivo até {limite}")
 
     @classmethod
     def carregar(cls) -> "Config":
@@ -66,6 +78,10 @@ class Config:
             "rede_timeout": "REDE_TIMEOUT_S", "midia_timeout": "MIDIA_TIMEOUT_S",
             "midia_max_bytes": "MIDIA_MAX_BYTES", "retry_base": "RETRY_BASE_S",
             "retry_max": "RETRY_MAX_S", "shutdown_timeout": "SHUTDOWN_TIMEOUT_S",
+            "janela_oferta_horas": "JANELA_OFERTA_HORAS", "enriquecimento_workers": "ENRIQUECIMENTO_WORKERS",
+            "resolucao_timeout": "RESOLUCAO_TIMEOUT_S", "resolucao_redirects": "RESOLUCAO_REDIRECTS",
+            "resolucao_max_bytes": "RESOLUCAO_MAX_BYTES", "resolucao_tentativas": "RESOLUCAO_TENTATIVAS",
+            "resolucao_cache_positivo": "RESOLUCAO_CACHE_POSITIVO_S", "resolucao_cache_negativo": "RESOLUCAO_CACHE_NEGATIVO_S",
         }
         padrao = cls()
         valores = {}

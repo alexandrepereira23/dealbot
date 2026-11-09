@@ -470,7 +470,7 @@ class TestColetaRetoma(unittest.IsolatedAsyncioTestCase):
         canal = await self.estado.canal(CANAL_ID)
         self.assertEqual((canal["cursor"], canal["limite"], canal["bootstrap"]), (1, 10, 123))
         versao = await self.estado._executar(lambda: self.estado.db.execute("PRAGMA user_version").fetchone()[0])
-        self.assertEqual(versao, 5)  # Etapa 2 acrescenta contexto/diagnóstico sem perder a migração v3.
+        self.assertEqual(versao, 6)  # Etapa 3 acrescenta identidade/cache sem perder a migração v3.
         await self.estado.falhar_resolucao("@CANAL", time.time() + 120, "FloodWait")
         self.assertEqual((await self.estado.resolucao("canal"))["tentativas"], 1)
 

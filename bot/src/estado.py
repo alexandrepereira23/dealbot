@@ -76,7 +76,7 @@ class EstadoLocal:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA busy_timeout=2000")
         versao = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if versao not in (0, 1, 2, 3, 4, 5):
+        if versao not in (0, 1, 2, 3, 4, 5, 6):
             raise FalhaLocal("versao_local_nao_suportada")
         self._migrar()
         if os.name != "nt":
@@ -120,6 +120,20 @@ class EstadoLocal:
                 username TEXT PRIMARY KEY, proxima REAL NOT NULL DEFAULT 0,
                 tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT
             );
+            CREATE TABLE IF NOT EXISTS cache_urls (
+                url TEXT PRIMARY KEY, resultado TEXT NOT NULL,
+                expira_em REAL NOT NULL, versao INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS enriquecimentos (
+                canal_id INTEGER NOT NULL, msg_id INTEGER NOT NULL,
+                produto_id INTEGER NOT NULL, url TEXT NOT NULL,
+                estado TEXT NOT NULL DEFAULT 'pendente',
+                tentativas INTEGER NOT NULL DEFAULT 0, proxima REAL NOT NULL DEFAULT 0,
+                resultado TEXT, erro TEXT, finalizado_em REAL,
+                PRIMARY KEY(canal_id,msg_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_enriquecimentos_elegiveis
+                ON enriquecimentos(estado,proxima);
         """
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -134,12 +148,17 @@ class EstadoLocal:
                 ("canais", "geracao", "INTEGER NOT NULL DEFAULT 0"),
                 ("eventos", "contexto", "TEXT NOT NULL DEFAULT '{}'"),
                 ("eventos", "diagnostico", "TEXT NOT NULL DEFAULT '{}'"),
+                ("eventos", "identidade", "TEXT"),
+                ("eventos", "remoto_confirmado", "INTEGER NOT NULL DEFAULT 0"),
+                ("eventos", "referencia_remota", "INTEGER NOT NULL DEFAULT 0"),
+                ("enriquecimentos", "tentativas_rpc", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if coluna not in {r[1] for r in db.execute(f"PRAGMA table_info({tabela})")}:
                     db.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}")
             db.execute("UPDATE eventos SET estado='retry' WHERE estado='processando'")
             db.execute("UPDATE midias SET estado='retry' WHERE estado='processando'")
-            db.execute("PRAGMA user_version=5")
+            db.execute("UPDATE enriquecimentos SET estado='retry' WHERE estado='processando'")
+            db.execute("PRAGMA user_version=6")
             db.commit()
         except BaseException:
             db.rollback()
@@ -327,13 +346,15 @@ class EstadoLocal:
         return await self._executar(op)
 
     async def decidir(self, job: dict, produto: dict, hash_oferta: str,
-                      diagnostico: dict | None = None) -> None:
+                       diagnostico: dict | None = None, identidade: dict | None = None) -> None:
         def op() -> None:
             with self._conexao():
                 self._conexao().execute("""UPDATE eventos SET decisao=?,hash=?,
-                    diagnostico=COALESCE(?,diagnostico) WHERE canal_id=? AND msg_id=?""",
+                    diagnostico=COALESCE(?,diagnostico),identidade=COALESCE(?,identidade)
+                    WHERE canal_id=? AND msg_id=?""",
                     (json.dumps(produto, allow_nan=False), hash_oferta,
-                     json.dumps(diagnostico, allow_nan=False) if diagnostico is not None else None,
+                      json.dumps(diagnostico, allow_nan=False) if diagnostico is not None else None,
+                      json.dumps(identidade, allow_nan=False) if identidade is not None else None,
                      job["canal_id"], job["msg_id"]))
         await self._executar(op)
 
@@ -422,6 +443,9 @@ class EstadoLocal:
                     AND NOT EXISTS(SELECT 1 FROM midias m WHERE m.produto_id=e.produto_id
                         AND (m.estado NOT IN ('pronta','sem_foto','falha_permanente','removida') OR m.compensar=1))
                     AND NOT EXISTS(SELECT 1 FROM donos_hash d WHERE d.canal_id=e.canal_id AND d.msg_id=e.msg_id)
+                    AND ((e.identidade IS NULL AND e.referencia_remota=0) OR e.remoto_confirmado=1)
+                    AND NOT EXISTS(SELECT 1 FROM enriquecimentos r WHERE r.canal_id=e.canal_id
+                        AND r.msg_id=e.msg_id AND r.finalizado_em IS NULL)
                     LIMIT ?""", (antes, lote)).fetchall()
                 db.executemany("DELETE FROM eventos WHERE canal_id=? AND msg_id=?", [tuple(r) for r in ids])
                 midias = db.execute("""DELETE FROM midias WHERE produto_id IN (SELECT produto_id FROM midias
@@ -430,11 +454,100 @@ class EstadoLocal:
                 return {"eventos": len(ids), "midias": midias.rowcount}
         return await self._executar(op)
 
+    async def cache_url(self, url: str, agora: float) -> dict | None:
+        def op() -> dict | None:
+            r = self._conexao().execute("SELECT resultado FROM cache_urls WHERE url=? AND expira_em>? AND versao=2",
+                                        (url, agora)).fetchone()
+            return json.loads(r[0]) if r else None
+        return await self._executar(op)
+
+    async def guardar_cache_url(self, url: str, resultado: dict, expira_em: float) -> None:
+        def op() -> None:
+            with self._conexao():
+                self._conexao().execute("INSERT INTO cache_urls VALUES(?,?,?,2) ON CONFLICT(url) DO UPDATE SET resultado=excluded.resultado,expira_em=excluded.expira_em,versao=2",
+                    (url, json.dumps(resultado, allow_nan=False), expira_em))
+        await self._executar(op)
+
+    async def agendar_enriquecimento(self, job: dict, produto_id: int, url: str) -> None:
+        def op() -> None:
+            with self._conexao():
+                self._conexao().execute("INSERT OR IGNORE INTO enriquecimentos(canal_id,msg_id,produto_id,url) VALUES(?,?,?,?)",
+                    (job["canal_id"], job["msg_id"], produto_id, url))
+        await self._executar(op)
+
+    async def obter_enriquecimento(self, agora: float) -> dict | None:
+        def op() -> dict | None:
+            db = self._conexao()
+            with db:
+                r = db.execute("SELECT * FROM enriquecimentos WHERE estado IN ('pendente','retry') AND proxima<=? ORDER BY proxima,canal_id,msg_id LIMIT 1", (agora,)).fetchone()
+                if r is None:
+                    return None
+                db.execute("UPDATE enriquecimentos SET estado='processando' WHERE canal_id=? AND msg_id=?", (r["canal_id"], r["msg_id"]))
+                return dict(r)
+        return await self._executar(op)
+
+    async def atualizar_enriquecimento(self, job: dict, **campos: Any) -> None:
+        if not campos or not set(campos) <= {"estado", "tentativas", "tentativas_rpc", "proxima", "resultado", "erro", "finalizado_em"}:
+            raise ValueError("campos_enriquecimento_invalidos")
+        def op() -> None:
+            with self._conexao():
+                self._conexao().execute("UPDATE enriquecimentos SET " + ",".join(f"{k}=?" for k in campos) + " WHERE canal_id=? AND msg_id=?",
+                    (*campos.values(), job["canal_id"], job["msg_id"]))
+        await self._executar(op)
+
+    async def obter_confirmacao(self) -> dict | None:
+        def op() -> dict | None:
+            r = self._conexao().execute("""SELECT e.canal_id,e.msg_id FROM eventos e
+                WHERE (e.identidade IS NOT NULL OR e.referencia_remota=1) AND e.remoto_confirmado=0
+                AND e.estado IN ('aprovada','duplicata')
+                AND NOT EXISTS(SELECT 1 FROM midias m WHERE m.produto_id=e.produto_id
+                    AND (m.estado NOT IN ('pronta','sem_foto','falha_permanente','removida') OR m.compensar=1))
+                AND NOT EXISTS(SELECT 1 FROM enriquecimentos r WHERE r.canal_id=e.canal_id
+                    AND r.msg_id=e.msg_id AND r.finalizado_em IS NULL)
+                ORDER BY e.finalizado_em LIMIT 1""").fetchone()
+            return dict(r) if r else None
+        return await self._executar(op)
+
+    async def confirmar_remoto(self, job: dict) -> None:
+        def op() -> None:
+            with self._conexao():
+                self._conexao().execute("UPDATE eventos SET remoto_confirmado=1 WHERE canal_id=? AND msg_id=?", (job["canal_id"], job["msg_id"]))
+        await self._executar(op)
+
+    async def legados_recuperaveis(self, lote: int = 100) -> list[dict]:
+        def op() -> list[dict]:
+            return [dict(r) for r in self._conexao().execute("""SELECT e.* FROM eventos e
+                WHERE e.identidade IS NULL AND e.decisao IS NOT NULL AND e.referencia_remota=0
+                AND (e.estado NOT IN ('aprovada','duplicata','descartada','falha_permanente')
+                    OR EXISTS(SELECT 1 FROM midias m WHERE m.produto_id=e.produto_id
+                        AND (m.estado NOT IN ('pronta','sem_foto','falha_permanente','removida') OR m.compensar=1)))
+                ORDER BY e.canal_id,e.msg_id LIMIT ?""", (lote,))]
+        return await self._executar(op)
+
+    async def fixar_referencia(self, job: dict) -> None:
+        def op() -> None:
+            with self._conexao():
+                self._conexao().execute("UPDATE eventos SET referencia_remota=1 WHERE canal_id=? AND msg_id=?",
+                    (job["canal_id"], job["msg_id"]))
+        await self._executar(op)
+
+    async def limpar_enriquecimentos(self, antes: float, agora: float, lote: int) -> None:
+        def op() -> None:
+            db = self._conexao()
+            with db:
+                db.execute("DELETE FROM cache_urls WHERE url IN (SELECT url FROM cache_urls WHERE expira_em<? LIMIT ?)", (agora, lote))
+                db.execute("""DELETE FROM enriquecimentos WHERE rowid IN (SELECT r.rowid FROM enriquecimentos r
+                    WHERE r.finalizado_em<? AND NOT EXISTS(SELECT 1 FROM eventos e WHERE e.canal_id=r.canal_id
+                        AND e.msg_id=r.msg_id AND e.remoto_confirmado=0) LIMIT ?)""", (antes, lote))
+        await self._executar(op)
+
     async def resumo(self) -> dict:
         def op() -> dict:
             db = self._conexao()
             return {"ofertas": {r[0]: r[1] for r in db.execute("SELECT estado,COUNT(*) FROM eventos GROUP BY estado")},
                     "midias": {r[0]: r[1] for r in db.execute("SELECT estado,COUNT(*) FROM midias GROUP BY estado")},
+                    "enriquecimentos": {r[0]: r[1] for r in db.execute("SELECT estado,COUNT(*) FROM enriquecimentos GROUP BY estado")},
+                    "confirmacoes_pendentes": db.execute("SELECT COUNT(*) FROM eventos WHERE (identidade IS NOT NULL OR referencia_remota=1) AND remoto_confirmado=0 AND estado IN ('aprovada','duplicata')").fetchone()[0],
                     "mais_antiga": db.execute("SELECT MIN(recebido_em) FROM eventos WHERE finalizado_em IS NULL").fetchone()[0]}
         return await self._executar(op)
 

@@ -57,3 +57,11 @@ class ArmazenamentoSupabase:
         # [] também confirma remoção idempotente de um objeto já ausente.
         if not isinstance(dados, list):
             raise RuntimeError("Remoção de mídia sem confirmação do Supabase")
+
+    async def url_publica(self, chave: str) -> str:
+        """Mesmo endereço usado no upload, inclusive para commit de upload ambíguo."""
+        self._validar_chave(chave)
+        url = await asyncio.wait_for(self._client.storage.from_(BUCKET).get_public_url(chave), self._timeout)
+        if not isinstance(url, str) or not url:
+            raise RuntimeError("url_publica_ausente")
+        return url

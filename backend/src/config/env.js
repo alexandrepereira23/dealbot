@@ -9,6 +9,14 @@ function obrigatorio(chave) {
 
 const nodeEnv = process.env.NODE_ENV || "development";
 
+function inteiroPositivo(chave, padrao, maximo, minimo = 1) {
+  const valor = Number(process.env[chave] ?? padrao);
+  if (!Number.isInteger(valor) || valor < minimo || valor > maximo) {
+    throw new Error(`Variável de ambiente inválida: ${chave}`);
+  }
+  return valor;
+}
+
 // Em produção, CORS_ORIGIN é obrigatório — nunca abrir para "*" sem querer.
 // Em dev, default para o Next em localhost:3000.
 function resolverCorsOrigin() {
@@ -31,6 +39,9 @@ export const env = {
   supabaseServiceKey: obrigatorio("SUPABASE_SERVICE_KEY"),
   supabaseAnonKey: obrigatorio("SUPABASE_ANON_KEY"),
   corsOrigin: resolverCorsOrigin(),
-  retencaoHoras: Number(process.env.RETENCAO_HORAS ?? 48),
-  limpezaIntervaloMin: Number(process.env.LIMPEZA_INTERVALO_MIN ?? 60),
+  retencaoHoras: inteiroPositivo("RETENCAO_HORAS", 48, 8760),
+  retencaoDias: inteiroPositivo("RETENCAO_DIAS", 7, 3650, 7),
+  limpezaIntervaloMin: inteiroPositivo("LIMPEZA_INTERVALO_MIN", 60, 10080),
+  limpezaLote: inteiroPositivo("LIMPEZA_LOTE", 100, 500),
+  limpezaMaxLotes: inteiroPositivo("LIMPEZA_MAX_LOTES", 10, 100),
 };

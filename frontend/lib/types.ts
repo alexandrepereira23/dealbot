@@ -11,6 +11,11 @@ export type Produto = {
   canais?: string[];
   criado_em: string;
   data_oferta: string | null;
+  preco_anterior_atualizacao?: number | null;
+  preco_observado_em?: string | null;
+  atualizado_em?: string | null;
+  ultima_aparicao_em?: string | null;
+  expira_em?: string | null;
 };
 
 export type TipoRegra = "interesse" | "bloqueio_global";

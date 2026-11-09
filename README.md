@@ -275,6 +275,15 @@ um perfil local encontrou custo dominante em `linecache.checkcache`/`stat`,
 não na execução SQL. Isso não prova a causa de todo timeout: preserve a falha,
 registre o ambiente e use controles de agendamento, sem mudar `WAL`/`FULL`,
 assertions ou dados para mascará-la. Evidências e limites constam no PRD da etapa 2.
+Na etapa 3, controles base/atual também localizaram caudas no COMMIT (até2,546s
+na base), além do custo de `stat` com fontes9p. Para verificação POSIX, prefira
+fontes e temporários no filesystem Linux do WSL, com Python3.12/requirements;
+confira hashes se usar snapshot, copiando apenas código/fixtures, nunca `.env`,
+sessões ou estado privado. Execute em `bot/` o mesmo comando completo acima,
+sem sondas e mantendo debug, watchdogs e WAL/FULL intactos. Registre falhas anteriores
+e o filesystem de fontes/venv/temporários: uma execução rápida não elimina caudas
+de sincronização, e um teste lento não autoriza atribuir regressão sem controles.
+Não reinicie/reconfigure WSL/Windows nem mude durabilidade para testar essa hipótese.
 Os controles de refresh em `python -m unittest tests.test_progresso_configuracao -v`
 usam barreiras de eventos, dois workers e SQLite real para exercitar janelas de
 notificação/SELECT/commit. Não reproduzem nem explicam o timeout histórico.
@@ -494,3 +503,201 @@ não valida extensões/RLS/infraestrutura do Supabase real. PGlite não é depen
 de produção. No build, usar variáveis `NEXT_PUBLIC_*` fictícias de teste, não
 credenciais. Resultados, comparação com a base e limitações estão no PRD
 `docs/sdd/incrementos/dealbot-etapa-02-extracao-filtros.md`.
+
+## Etapa 3 — identidade de ofertas (preparação local, sem deploy)
+
+O caminho ativo passa a usar `pipeline_identidade.py` e `repository_identidade.py`.
+`produtos` continua sendo o card/instância de oferta, não um catálogo. O hash
+antigo em `dedup.py` permanece **somente para decisões legadas congeladas**;
+ausência de schema/RPC novo mantém trabalho pendente, nunca ativa fallback novo
+por título. Leia o estado e as evidências atuais no
+`docs/sdd/incrementos/dealbot-etapa-03-identidade-deduplicacao.md` antes de aplicar
+qualquer atualização futura. Nenhum SQL desta etapa foi aplicado em produção.
+
+### Política e matriz de identidade
+
+| Evidência | Decisão |
+|---|---|
+| Mesmo canal Telegram numérico + mensagem | Mesmo evento, inclusive live/histórico/retry após 48h. |
+| Identidade forte de produto/variante, vendedor/anúncio e condições equivalentes | Um card por instância, outra aparição para cada evento novo. |
+| Preço conhecido mais recente menor **ou maior** | Atualizar, sem conservar preço antigo apenas porque era menor. |
+| Mesmo título, foto, preço ou URL curta | Não prova equivalência; preservar separado quando incerto. |
+| Outro seller/loja/variante/kit/quantidade ou condição conflitante | Oferta separada; não remover conflito da chave. |
+| Cupom omitido ou vendedor/variante desconhecidos | Não interpretar como sem cupom/seller padrão/variante única. |
+| Dois encurtadores opacos | Duplicatas provisórias permitidas; reconciliar somente após prova suficiente. |
+
+Preço não faz parte da chave estável. Nulo difere de zero. `preco_original` é
+o preço anterior **anunciado**; `preco_anterior_atualizacao` é metadado distinto
+para uma mudança observada. Uma observação vencedora sem preço torna o atual
+desconhecido, não zero nem o último menor preço. O card só indica queda quando
+ambos os valores comparados são conhecidos, sem fabricar desconto anunciado.
+
+### Formatos realmente reconhecidos e incerteza
+
+`identidade.py` aceita um subconjunto deliberadamente restrito: Amazon BR
+`/dp/ASIN` e Mercado Livre BR `/MLB-número` sem slug. O domínio aceito **não**
+significa suporte completo. ASIN/catálogo não prova seller ou seleção da variante;
+anúncio ML pode conter várias variações. Queries ML não interpretadas, fragmentos,
+assinaturas ou outros formatos permanecem incertos. Só `tag` de Amazon no formato
+suportado é descartado por regra específica; `linkCode` é conservado/comparado
+com caixa exata, `smid` não é removido e precisa concordar com vendedor comprovado.
+Não há lista universal de tracking nem ordenação/reconstrução da query.
+
+Identidade forte exige evidência explícita das dimensões relevantes de compra.
+O parser pequeno aceita campos de `contexto.identidade` em entradas locais ou
+linhas rotuladas da mensagem (`Vendedor:`, `SKU:`, `Variante:`, `Estado:`,
+`Quantidade:`, `Kit:`, `Elegibilidade:`, `Pagamento:`, `Cupom:`, `Restrições:`,
+`Frete:`, `Assinatura:`, entre outros documentados no módulo). Não aplicabilidade
+estruturada exige motivo; omissão é desconhecida, nunca default comercial.
+O adaptador Telegram não inventa esses metadados. Texto livre restritivo não
+interpretado impede chave; muitos posts comuns continuarão provisórios por
+insuficiência de prova. Isso evita prometer fusão baseada apenas no link final.
+
+Fontes primárias conceituais: modelo oficial Amazon Catalog Items 2022-04-01,
+documentação Mercado Livre de variações e requisitos Amazon Associates de links.
+Referências/limites estão no PRD e docstrings. Fixtures em
+`bot/tests/test_identidade_etapa3.py` são **sintéticas**, não mensagens reais.
+Não se acessam canais para amostras, lojas para preço ou APIs autenticadas de lojas.
+
+### Resolução sem atrasar a oferta
+
+Fluxo: identificação local → cache SQLite válido → salvar oferta → worker de
+enriquecimento → eventual fusão. Oferta e mídia continuam com seus workers;
+resolução tem orçamento próprio, default um worker. Um cache positivo pode
+fornecer destino imediatamente após reinício, mas as demais condições ainda
+precisam ser equivalentes. Negativo expira; não se repete indefinidamente o mesmo
+ciclo impossível. Link original navegável e representação de identidade são
+distintos; resultado incerto mantém original.
+
+Allowlist exata: `amzn.to`, `a.co`, `meli.la` e hosts BR de Amazon/Mercado Livre
+listados em `resolvedor.py`. Somente HTTP/80 ou HTTPS/443, DNS público validado
+em cada salto e socket no IP validado, com certificado/SNI corretos. Sem proxy
+de ambiente, autenticação, cookies de conta, JS ou browser. HEAD primeiro;
+GET Range apenas em 405/501, lendo somente cabeçalhos e fechando o transporte
+sem ler/descomprimir HTML/corpo. Limites default: 5s totais, 5 redirects,
+64KiB consumidos pela aplicação, cabeçalhos até 16KiB por resposta. Buffers
+finitos de SO/TLS podem antecipar bytes; isso não é teto de tráfego na placa.
+Loopback/redes privadas/link-local/metadata/IPv6 não público são recusados.
+
+Cache positivo default 24h, negativo 15min; até 3 tentativas por ciclo. Resultado
+HTTP positivo só confirma destino candidato, **não** identidade comercial.
+Resolução e reconciliação têm checkpoints separados: falha na RPC de fusão não
+refaz rede já confirmada. Falha/timeout nunca rejeita ou esconde a oferta aprovada.
+Novos parâmetros e limites estão nos `.env.example`, sem mudança de credenciais.
+
+### Tempo, expiração, aliases e retenção
+
+Datas de mensagem, ingestão, observação de preço e última aparição válida são
+distintas. Ordem de preço: maior tupla `(data original válida, canal Telegram
+numérico, mensagem)`. Empate usa política determinística, não ordem de chegada.
+Sem data confiável não se inventa recência. Histórico atrasado não reduz preço
+novo nem renova validade pelo relógio de recepção.
+
+Janela inicial 48h, gravada por instância: `expira_em` depende da última aparição
+realmente nova e válida. Retry não renova; uma lacuna após expiração permite nova
+instância, sem mover eventos antigos. A API lista/conta só canônicos ativos;
+GET por ID fundido resolve o canônico, DELETE por alias remove aquela instância,
+não todas as ofertas futuras do produto. Falha técnica não vira falso 404.
+
+Fusão escolhe menor ID elegível, preserva aparições/observações e foto válida;
+aliases são persistentes e não podem ciclar. Jobs/mídia resolvem ID antigo.
+Remoção de objeto conhecido exige reserva transacional que impeça novo vínculo,
+além de confirmação retomável após Storage. Não há varredura geral de bucket.
+
+Estado local evolui aditivamente à v6. Eventos v2 só são elegíveis para limpeza
+local depois do ack remoto; este só ocorre quando oferta, mídia/compensação e
+enriquecimento estão terminais. Referências recuperáveis remotas não expiram só
+porque passaram 48h. Retenção normal compacta é 7 dias após terminalização/ack;
+pendência recuperável é exceção explícita. Não se promete dedup eterna de replay
+arbitrário depois de perder/purgar todos os registros locais e remotos.
+
+Jobs legados recuperáveis têm preflight próprio antes da recepção: o bot fixa
+referências usando somente decisão/hash/aliases/ID congelados e, ao terminar,
+libera o gate remoto `oferta_controle.legado_pronto`. Até lá o limpador novo não
+expira/purga legado. `eventos.referencia_remota` mantém essa proteção separada da
+identidade antiga, sem reclassificar histórico. Pendência antiga cujo card já foi
+apagado antes desta migração exige diagnóstico; não se recria silenciosamente.
+Observações confirmadas antigas e aliases elegíveis são purgados em lotes,
+inclusive em cards renovados continuamente; o resumo vencedor é preservado.
+
+A unicidade nova usa `(canal_id, telegram_msg_id)` numéricos; username continua
+em `canal_origem` somente para apresentação e reconciliação legada delimitada.
+`produtos.canal_id` identifica o evento de origem do card, não todos os seus
+canais (estes são aparições). Os índices textuais antigos passam a valer apenas
+para linhas com `canal_id IS NULL`; assim, um username reutilizado não bloqueia
+eventos de canais distintos. O schema não atribui números ao histórico em massa:
+somente uma reconciliação legada inequívoca pode fixar a posse da própria linha,
+preservando IDs, hashes, grafia e datas. Texto não permite adotar evento v2 nem
+linha comprovadamente pertencente a outro canal numérico. Um legado totalmente
+sem evidência numérica conserva a compatibilidade textual e sua incerteza.
+
+A migração substitui transacionalmente apenas as definições globais conhecidas,
+valida os quatro índices parciais e aborta sobre tipos/definições/dados incompatíveis,
+sem apagar duplicatas ou usar CASCADE. `oferta_legado_pronto` confere esses índices
+antes de liberar o gate. Escritores antigos com `ON CONFLICT` textual direto são
+incompatíveis com essa transição: não os executar junto das RPCs novas, inclusive
+para jobs congelados (estes usam `oferta_legado_registrar`). Reaplicar o schema
+completo não recria índices globais nem elimina usernames repetidos legítimos.
+
+### Ordem segura de atualização futura e reversão
+
+1. Fazer backup consistente do SQLite e conferir schema/contratos/dados, somente
+   em operação futura autorizada. Nunca copiar apenas o arquivo principal com WAL
+   ativo, apagar fila ou inventar canal numérico a partir de username.
+2. Parar coletor **e suspender limpador antigo**: ele remove por `criado_em` e não
+   entende aliases/fotos adotadas. Preparar/aplicar primeiro schema aditivo da etapa
+   3; esta entrega executa SQL apenas em bancos locais descartáveis de teste.
+3. Atualizar backend/limpeza compatíveis, depois bot com mesmo `BOT_STATE_DIR` e
+   único coletor, conferindo RPCs/grants/índices/versões; frontend mínimo por último.
+   Retomar limpeza só com protocolo novo. Sem coexistência de limpador antigo.
+4. Não recalcular decisões/hash pendentes, refiltrar aprovados, fundir histórico
+   em massa ou executar backfill remoto. Migração não transforma legado em prova.
+5. Rollback: parar escrita/limpeza, preservar SQLite/schema/aliases/pins e usar
+   versão compatível ou manter processamento pausado até correção. Não voltar
+   automaticamente a bot/limpador antigos sobre dados novos. Restaurar backup com
+   perda de eventos exige decisão explícita; downgrade transparente não existe.
+
+RPCs de gravação/fusão são SECURITY INVOKER, com EXECUTE restrito ao papel servidor
+necessário, não PUBLIC/anon/authenticated; não relaxar RLS para testes. Nenhuma chave
+de serviço vai para frontend. Testes SQL devem provar duas sessões independentes;
+PGlite isolado ou HTTP fake não provam essa concorrência.
+
+### Diagnóstico e verificações
+
+Logs correlacionam canal/mensagem/card/versão/motivo/estado, sem URL completa,
+cupom, texto ou segredos. Inspecione cópia consistente privada do SQLite para
+`eventos.identidade`, `cache_urls`, `enriquecimentos`, `remoto_confirmado` e jobs de
+mídia. `estado_local` inclui contagens de enriquecimento/confirmações pendentes.
+Motivos distinguem evidência incompleta, campos conflitantes, formato não
+suportado, falha DNS/redirect/transporte e reconciliação pendente. Evidências
+completas podem conter dados privados: não publicar a saída de inspeção.
+
+Comandos de teste/medições finais e suas limitações são registrados no PRD;
+não confundir simulação/fakes com latência, PostgREST, Storage ou RLS de produção.
+Esta etapa não autoriza deploy, commit/push ou início da etapa 4.
+
+```bash
+# Em bot/, ambiente de teste sem .env/credenciais:
+python -m unittest discover -s tests -v
+python -m simulacao --seed 42 --live 30 --historico 100 --db-ms 20 --midia-ms 200 --oferta-workers 4 --midia-workers 1
+python -m simulacao_identidade --seed 42 --pares 10 --cenario todos --db-ms 20 --resolucao-ms 200 --oferta-workers 4 --enriquecimento-workers 1
+
+# Em backend/, somente PostgreSQL LOCAL descartável VAZIO, sem senha real:
+DEALBOT_TEST_POSTGRES_URL=postgresql://postgres@127.0.0.1:55439/dealbot_teste_etapa3 \
+DEALBOT_TEST_POSTGRES_DISPOSABLE=SIM npm run test:sql:etapa3
+```
+
+Runner SQL aceita `DEALBOT_TEST_PSQL` absoluto quando `psql` não está no PATH;
+recusa host remoto, banco não protegido/não vazio, senha/query de conexão e não
+lê `.env`/arquivo de senha do usuário. Preserva fixtures para inspeção, sem DROP.
+Testa DDL repetido, legado, invoker/RLS/grants, duas sessões com barreira real de
+lock, rollback de fusão e corridas. Papéis/auth/storage do Supabase são sintéticos;
+não comprova PostgREST/Storage/infraestrutura reais. O modo alternativo PGlite
+termina com saída2: não atende concorrência de sessões e não aprova a etapa.
+
+O simulador de identidade usa uma espera por RPC fake, contra cinco operações
+lógicas no benchmark original; não comparar diretamente esses tempos como ganho
+de produção. Cenários frio/quente/lento compartilham dataset e medem card antes
+de liberar resolução, convergência posterior, aparições, filas e máximos de workers.
+Limpeza da API usa `RETENCAO_DIAS=7`, `LIMPEZA_LOTE=100`, `LIMPEZA_MAX_LOTES=10`;
+os exemplos estão também em `backend/.env.example`.

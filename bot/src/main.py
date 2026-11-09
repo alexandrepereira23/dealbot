@@ -12,10 +12,10 @@ from .estado import EstadoLocal
 from .midia import ArmazenamentoSupabase
 from .modelos import FalhaLocal
 from .observabilidade import log, motivo_erro
-from .pipeline import Pipeline
+from .pipeline_identidade import PipelineIdentidade as Pipeline
 from .politica import classificar
 from .recuperacao import Recuperacao
-from .repository import RepositorioSupabase
+from .repository_identidade import RepositorioIdentidade as RepositorioSupabase
 from .sinais import sinais_encerramento
 from .telegram import Telegram
 
@@ -137,6 +137,8 @@ async def manutencao(estado: EstadoLocal, pipeline: Pipeline, config: Config) ->
             antes = time.time() - config.retencao_dias * 86400
         try:
             removidos, continuar = await limpar_ciclo(estado, config, antes)
+            # O mesmo instante/cutoff governa toda a drenagem, inclusive cache.
+            await estado.limpar_enriquecimentos(antes, antes + config.retencao_dias * 86400, config.limpeza_lote)
             log("estado_local", removidos=removidos, continuar=continuar, cutoff=antes,
                 workers=pipeline.ativos, **await estado.resumo())
             tentativas = 0
@@ -165,6 +167,13 @@ async def servir(client: Any, estado: EstadoLocal, repositorio: Any, armazenamen
     recuperacao = Recuperacao(estado, repositorio, telegram, config, pipeline.acordar_ofertas)
     tasks: list[asyncio.Task] = []
     recepcao_fatal = asyncio.get_running_loop().create_future()
+
+    try:
+        await pipeline.preparar_legados()
+    except Exception as erro:
+        log("prontidao_identidade_falhou", motivo=motivo_erro(erro),
+            acao="preservar_estado_e_conferir_schema_permissoes_referencias")
+        raise
 
     async def handler(event: Any) -> None:
         if parar.is_set() or event.chat_id not in recuperacao.ativos:

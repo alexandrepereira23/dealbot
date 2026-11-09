@@ -9,6 +9,10 @@ function desconto(p: Produto): number | null {
 
 function formatarData(produto: Produto): string | null {
   const fonte = produto.data_oferta ?? produto.criado_em;
+  return formatarInstante(fonte);
+}
+
+function formatarInstante(fonte: string | null | undefined): string | null {
   if (!fonte) return null;
   const d = new Date(fonte);
   if (Number.isNaN(d.getTime())) return null;
@@ -42,6 +46,16 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
   const off = desconto(produto);
   const dataFmt = formatarData(produto);
   const canais = listarCanais(produto);
+  const observacaoFmt = formatarInstante(produto.preco_observado_em);
+  const anterior = produto.preco_anterior_atualizacao;
+  const atualizacao = observacaoFmt && anterior !== null && anterior !== undefined &&
+    Number.isFinite(anterior) && produto.preco !== null && Number.isFinite(produto.preco)
+    ? produto.preco < anterior
+      ? `Preço caiu de R$ ${anterior.toFixed(2)} · ${observacaoFmt}`
+      : produto.preco > anterior
+        ? `Preço atualizado · ${observacaoFmt}`
+        : null
+    : null;
 
   function copiarCupom() {
     if (!produto.cupom) return;
@@ -91,6 +105,7 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
             </span>
           )}
         </div>
+        {atualizacao && <p className="produto__date">{atualizacao}</p>}
         {produto.cupom && (
           <div className="produto__coupon">
             <span>Cupom</span>
