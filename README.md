@@ -520,6 +520,7 @@ qualquer atualização futura. Nenhum SQL desta etapa foi aplicado em produção
 |---|---|
 | Mesmo canal Telegram numérico + mensagem | Mesmo evento, inclusive live/histórico/retry após 48h. |
 | Identidade forte de produto/variante, vendedor/anúncio e condições equivalentes | Um card por instância, outra aparição para cada evento novo. |
+| Cópia estrita do post, preço igual e mesmo destino de compra verificável | Um card e duas aparições, sem afirmar equivalência comercial de metadados ausentes. |
 | Preço conhecido mais recente menor **ou maior** | Atualizar, sem conservar preço antigo apenas porque era menor. |
 | Mesmo título, foto, preço ou URL curta | Não prova equivalência; preservar separado quando incerto. |
 | Outro seller/loja/variante/kit/quantidade ou condição conflitante | Oferta separada; não remover conflito da chave. |
@@ -552,6 +553,34 @@ estruturada exige motivo; omissão é desconhecida, nunca default comercial.
 O adaptador Telegram não inventa esses metadados. Texto livre restritivo não
 interpretado impede chave; muitos posts comuns continuarão provisórios por
 insuficiência de prova. Isso evita prometer fusão baseada apenas no link final.
+
+#### Cópias de publicação — revisão da etapa 3
+
+A identidade **comercial forte v2** permanece inalterada. Para novas decisões,
+`copia_versao: 1` habilita uma assinatura **independente** de cópia: destino
+verificável do formato Amazon/ML suportado + texto integral + preço exato em
+centavos + evidências/contexto preservados. Só CRLF vira LF; caixa, espaços,
+cupons, condições, outros links e rótulos de entidades/botões não são apagados.
+Substitui-se apenas a ligação de compra selecionada por um marcador; ligações
+selecionadas múltiplas/ambíguas não geram assinatura. A tag Amazon reconhecida
+pode sair do destino de comparação; `smid` e `linkCode` são conservados. Query
+desconhecida, fragmento ou formato não suportado impedem cópia, não são removidos
+para fabricar equivalência. Cada observação mantém seu link original navegável.
+
+Assim, dois posts `Notebook 16 GB / Por R$ 2.499,90 no Pix / <compra>` com o mesmo
+link ML, ou Amazon diferindo só na tag reconhecida, convergem localmente sem rede.
+Não é dedup por título+preço ou URL+preço: mudar condição, vendedor/variante,
+conteúdo, outro link ou preço mantém separado. Ausência continua desconhecida.
+Por conservadorismo, cópia só reúne registros **sem identidade comercial forte**;
+não liga forte↔fraca nem fortes incompatíveis. Chave **e** comparação completa
+são conferidas na transação, e preço da observação precisa concordar com a cópia.
+
+Dois encurtadores permanecem disponíveis em cards provisórios até o resolvedor
+isolado comprovar o destino; depois a mesma RPC de fusão reúne cópias elegíveis,
+preservando aparições, aliases, fotos/pins e IDs antigos. Cache válido evita rede;
+falha/timeout não impede publicação. A decisão inicial/hash/checkpoints não são
+reescritos. Decisões antigas sem `copia_versao` não recebem essa regra nova no
+retry/enriquecimento. Não há backfill/reclassificação do histórico.
 
 Fontes primárias conceituais: modelo oficial Amazon Catalog Items 2022-04-01,
 documentação Mercado Livre de variações e requisitos Amazon Associates de links.
@@ -598,6 +627,15 @@ realmente nova e válida. Retry não renova; uma lacuna após expiração permit
 instância, sem mover eventos antigos. A API lista/conta só canônicos ativos;
 GET por ID fundido resolve o canônico, DELETE por alias remove aquela instância,
 não todas as ofertas futuras do produto. Falha técnica não vira falso 404.
+
+Uma instância expirada pode receber uma observação válida **mais recente** dentro
+da sua janela temporal original e voltar a ficar ativa, desde que a validade dessa
+observação alcance o presente e não exista instância posterior conhecida. Isso
+independe de já ter passado pelo limpador e usa a data original, nunca a ingestão:
+49h atrás/R$300 seguido de 2h atrás/R$250 resulta em uma visível a R$250 até a
+data da mensagem recente +48h, assim como na ordem inversa. Lacuna maior que a
+janela mantém instâncias separadas; histórico sozinho não reativa, retry antigo
+não renova/muda vínculo e remoção manual continua terminal.
 
 Fusão escolhe menor ID elegível, preserva aparições/observações e foto válida;
 aliases são persistentes e não podem ciclar. Jobs/mídia resolvem ID antigo.
@@ -662,6 +700,17 @@ necessário, não PUBLIC/anon/authenticated; não relaxar RLS para testes. Nenhu
 de serviço vai para frontend. Testes SQL devem provar duas sessões independentes;
 PGlite isolado ou HTTP fake não provam essa concorrência.
 
+**Migração da revisão de cópias/expiração:** antes do bot revisado, em atualização
+futura autorizada e com backup/escritores antigos pausados, reaplicar o bloco
+`ETAPA 3 OFERTAS` de `supabase/schema.sql` (também é reaplicável no schema completo).
+Ele acrescenta somente o índice de expressão de cópia e o comparador invoker
+`_oferta_equivalentes`, com grants restritos, e substitui as RPCs no mesmo bloco
+transacional. Há16 funções/auxiliares ao final. Não acrescenta confiança às linhas
+antigas nem recalcula hashes, apaga dados ou muda o SQLite v6. Os payloads v2
+congelados sem cópia continuam aceitos. Não executar o bot revisado sobre as RPCs
+anteriores: elas não conhecem cópias nem a correção temporal. Rollback segue a
+regra de pausar e preservar schema/fila, sem bot/limpador antigo sobre dados novos.
+
 ### Diagnóstico e verificações
 
 Logs correlacionam canal/mensagem/card/versão/motivo/estado, sem URL completa,
@@ -701,3 +750,44 @@ de produção. Cenários frio/quente/lento compartilham dataset e medem card ant
 de liberar resolução, convergência posterior, aparições, filas e máximos de workers.
 Limpeza da API usa `RETENCAO_DIAS=7`, `LIMPEZA_LOTE=100`, `LIMPEZA_MAX_LOTES=10`;
 os exemplos estão também em `backend/.env.example`.
+
+#### Validação local da revisão (2026-11-09)
+
+Os dois problemas foram reproduzidos no commit `2a6d962` antes de editar:
+
+| Caso sintético | Antes | Depois |
+|---|---|---|
+| Mesmo post/link ML ou Amazon diferindo só na tag reconhecida | 2 cards | 1 card/2 aparições, sem rede |
+| Mesmo post com dois encurtadores | 2 cards mesmo após resolver | 2 visíveis antes de liberar a resposta falsa; depois 1 card/2 aparições e IDs antigos resolvidos |
+| Mensagem de49h/R$300 seguida de2h/R$250 | Preço250 numa instância invisível | Uma visível a250, até a data recente+48h, nas duas ordens e com/sem limpeza |
+
+`python -B -m unittest discover -s tests -v` passou **403/403**, sem skips,
+em Python3.12.3/WSL,245,409s. Fontes/fixtures Linux com66 hashes iguais ao
+checkout; debug, watchdogs e SQLite WAL/FULL preservados. `pip check` passou.
+`npm test` passou **63/63** em `backend/` e **13/13** em `frontend/`.
+`npm run test:sql:etapa3` passou **47 grupos** em PostgreSQL17.5 local novo,
+com sessões independentes (PIDs1300/18348) e barreira `pg_locks`; não PGlite.
+Os novos casos cobrem preço/condições/conflitos, ausência de ponte forte↔fraca,
+aliases/fotos/pins, replay, concorrência e as duas ordens temporais. Uma prova
+complementar ligou `Telegram.envelope`/pipeline/repositório reais às RPCs reais,
+sem `contexto.identidade`, confirmando os três pares e os links originais.
+
+Falhas intermediárias não foram descartadas: o runner novo tentou leituras
+paralelas numa única sessão e reutilizou uma identidade comercial da fixture
+antiga; ambos os erros de instrumentação foram corrigidos sem relaxar asserts.
+Na primeira suíte completa houve9 erros porque o venv temporário usado ficou
+ausente durante a execução (httpx/subprocessos indisponíveis, causa externa não
+determinada). Sem mudar código/testes para contornar isso, foi criado um venv
+isolado no filesystem Linux com o requirements existente; SDK/sinais passaram
+22/22 antes da nova suíte integral. O Ubuntu não tinha ensurepip: pip foi
+inicializado por wheel do PyPI com SHA256 conferido, sem apt/sudo ou alteração
+das dependências do projeto. Logs separados `dealbot-revisao3-suite.log` e
+`dealbot-revisao3-suite-linux.log` preservam os dois resultados no temporário
+local de teste. A fixture negativa antiga agora usa destino não suportado:
+o destino Amazon anterior passou a comprovar cópia legítima, não falta de prova.
+
+Nenhuma medição acima prova latência de produção ou suporte comercial universal.
+Supabase/Auth/Storage/Telegram/lojas reais não foram acessados; não há browser
+E2E ou deploy. O cluster local foi parado limpidamente, com bases sintéticas
+preservadas. Revisão final estática sem novos achados no delta; seis prompts do
+usuário preservados, nada staged/commitado/publicado e etapa4 não iniciada.

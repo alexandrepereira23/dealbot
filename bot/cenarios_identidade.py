@@ -85,8 +85,17 @@ class RepositorioIdentidadeFake:
 
     @staticmethod
     def _equivalente(a, b):
-        return (a.get("chave") is not None and a["chave"] == b.get("chave")
-                and a["componentes"]["comparacao"] == b["componentes"]["comparacao"])
+        if a.get("chave") is not None or b.get("chave") is not None:
+            # Cópia nunca serve de ponte entre identidades comerciais, nem de
+            # evidência para completar uma identidade forte desconhecida.
+            return (a.get("chave") is not None and a["chave"] == b.get("chave")
+                    and a["componentes"]["comparacao"] == b["componentes"]["comparacao"])
+        copia_a, copia_b = a.get("copia") or {}, b.get("copia") or {}
+        return (copia_a.get("versao") == copia_b.get("versao") == 1
+                and copia_a.get("chave") is not None
+                and copia_a["chave"] == copia_b.get("chave")
+                and copia_a.get("comparacao") is not None
+                and copia_a["comparacao"] == copia_b.get("comparacao"))
 
     async def salvar_identificada(self, job, produto, identidade, janela_horas):
         await self._operacao("salvar_identificada")
@@ -120,8 +129,14 @@ class RepositorioIdentidadeFake:
         fonte = self.cards[produto_id]
         if fonte["removido"]:
             return ResultadoOferta(produto_id, "removido", fonte["foto_url"])
-        fonte["identidade"] = copy.deepcopy(identidade)
-        equivalentes = [c["id"] for c in self.ativos if self._equivalente(c["identidade"], identidade)]
+        # Um retry de cópia não pode apagar uma assinatura comercial já forte.
+        # Quando há promoção, conservar o JSON inteiro (evidências, comparação,
+        # cópia e campos futuros), não reconstruir uma assinatura parcial.
+        if fonte["identidade"].get("chave") is None or identidade.get("chave") is not None:
+            fonte["identidade"] = copy.deepcopy(identidade)
+        equivalentes = [c["id"] for c in self.ativos
+                        if c["id"] == produto_id
+                        or self._equivalente(c["identidade"], fonte["identidade"])]
         sobrevivente = min(equivalentes)
         for perdedor in equivalentes:
             if perdedor == sobrevivente:

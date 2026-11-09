@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as esperar } from "node:timers/promises";
+import { validarRevisao3, validarRevisao3Concorrente } from "./sql-revisao3.local.mjs";
 
 const endereco = process.env.DEALBOT_TEST_POSTGRES_URL;
 const modulo = process.env.DEALBOT_TEST_PGLITE_MODULE;
@@ -311,7 +312,9 @@ try {
     exists(select 1 from aclexplode(p.proacl) a where a.grantee=0 and a.privilege_type='EXECUTE') as publico
     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
     where n.nspname='public' and (p.proname like 'oferta_%' or p.proname like '_oferta_%' or p.proname like 'midia_%')`);
-  assert.equal(funcoes.length, 15);
+  assert.equal(funcoes.length, 16);
+  assert.ok(funcoes.some((f) => /(?:public\.)?_oferta_equivalentes\(jsonb,jsonb\)/.test(f.nome)),
+    "Comparador aditivo de identidades também deve constar na auditoria de privilégios");
   for (const f of funcoes) {
     assert.equal(f.prosecdef, false, f.nome);
     assert.equal(f.anon || f.autenticado || f.publico, false, f.nome);
@@ -812,6 +815,10 @@ try {
   await db.exec("rollback;");
   ok("reaplicação do bloco e schema completo após duplicatas textuais preserva todas as linhas e índices");
 
+  const revisao3 = { db, evento, produto, identidade, literal, registrar, registrarSQL,
+    enriquecerSQL, buscar, contar, dadosOfertas, ok };
+  await validarRevisao3(revisao3);
+
   if (!modulo) {
     const a = abrir(); const b = abrir();
     await a.exec("set role service_role;");
@@ -829,6 +836,7 @@ try {
       await a.exec("commit;");
       return [resultadoA, await pendente];
     }
+    await validarRevisao3Concorrente({ ...revisao3, disputar });
     const ec1 = evento(-6001, 1, 10);
     const ec2 = evento(-6002, 1, 11);
     const [ca, cb] = await disputar(registrarSQL(ec1, produto(123), identidade("e")), registrarSQL(ec2, produto(234), identidade("e")));

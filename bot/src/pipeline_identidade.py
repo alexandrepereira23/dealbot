@@ -79,7 +79,7 @@ class PipelineIdentidade(Pipeline):
             cached = await self.estado.cache_url(url, time.time()) if url else None
             identidade = identificar(produto, job["texto"], contexto,
                 url_resolvida=cached.get("url_final") if cached and cached.get("estado") == "positivo" else None)
-            identidade["enriquecer"] = bool(url and identidade.get("chave") is None)
+            identidade["enriquecer"] = bool(url and identidade.get("chave") is None and not identidade.get("copia"))
             hash_legado = gerar_hash(produto)
             await self.estado.decidir(job, produto, hash_legado, diagnostico, identidade)
             job = {**job, "hash": hash_legado, "identidade": json.dumps(identidade)}
@@ -155,7 +155,12 @@ class PipelineIdentidade(Pipeline):
         if resultado["estado"] == "positivo":
             produto = json.loads(evento["decisao"])
             identidade = identificar(produto, evento["texto"], json.loads(evento["contexto"]), url_resolvida=resultado["url_final"])
-            if identidade.get("chave") is not None:
+            congelada = json.loads(evento.get("identidade") or "{}")
+            if congelada.get("copia_versao") != 1:
+                # Checkpoints anteriores não aderem silenciosamente à regra nova.
+                identidade.pop("copia", None)
+                identidade.pop("copia_versao", None)
+            if identidade.get("chave") is not None or identidade.get("copia"):
                 reconciliada = await self.repositorio.enriquecer(job, identidade)
                 resultado["reconciliacao"] = {"status": reconciliada.status, "produto_id": reconciliada.produto_id}
             else:

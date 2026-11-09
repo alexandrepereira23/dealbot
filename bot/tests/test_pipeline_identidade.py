@@ -183,6 +183,10 @@ class TestPipelineIdentidade(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.repo.ativos), 2)
 
     async def test_resultado_positivo_sem_identidade_verificavel_preserva_originais(self):
+        # Destino de loja desconhecida continua sem prova. Amazon suportada com
+        # texto/preço idênticos agora prova cópia, sem inventar identidade forte.
+        self.resolvedor.resultado = {"estado": "positivo", "url_final": "https://loja-desconhecida.invalid/produto/1",
+                                    "motivo": "destino_sintetico_nao_suportado"}
         for canal, url in ((-100111, "https://amzn.to/Incerto"), (-100222, "https://meli.la/Incerto")):
             await self.processar(mensagem_sintetica(canal=canal, url=url, contexto={}))
             await self.pipeline._enriquecer(await self.estado.obter_enriquecimento(time.time()))

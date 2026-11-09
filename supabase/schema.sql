@@ -294,6 +294,10 @@ begin
     perform public._oferta_verificar_indices();
     create index if not exists idx_oferta_identidade_etapa3
         on public.produtos(identidade_chave,inicio_em,expira_em) where identidade_versao = 2;
+    -- Assinatura de cópia não atribui equivalência comercial ao legado.
+    create index if not exists idx_produtos_copia_etapa3
+        on public.produtos((identidade_dados->'copia'->>'chave'))
+        where identidade_versao=2 and canonico_id is null;
     create index if not exists idx_oferta_alias_etapa3 on public.produtos(canonico_id)
         where canonico_id is not null;
     create index if not exists idx_oferta_expiracao_etapa3 on public.produtos(estado_oferta,expira_em);
@@ -366,7 +370,33 @@ begin
         -- inferidas de título/URL/preço aqui. Hash sozinho nunca basta: comparar
         -- TODO componentes.comparacao (regra/campos/url). Proveniência/URLs
         -- originais externas à comparação podem divergir sem diferença comercial.
+        if p_identidade ? 'copia' and p_identidade->'copia' <> 'null'::jsonb then
+            if jsonb_typeof(p_identidade->'copia') is distinct from 'object'
+                or p_identidade->'copia'->'versao' is distinct from '1'::jsonb
+                or coalesce(p_identidade->'copia'->>'chave','') !~ '^[0-9a-f]{64}$'
+                or jsonb_typeof(p_identidade->'copia'->'comparacao') is distinct from 'object'
+                or not (p_identidade->'copia'->'comparacao' ?& array['destino','conteudo','preco_centavos'])
+                or jsonb_typeof(p_identidade->'copia'->'comparacao'->'conteudo') is distinct from 'string'
+                or coalesce(p_identidade->'copia'->'comparacao'->>'preco_centavos','') !~ '^[0-9]+$' then
+                raise exception 'Etapa 3: assinatura de cópia inválida' using errcode='22023';
+            end if;
+        end if;
     end $fn$ $ddl$;
+
+    execute $ddl$
+    create or replace function public._oferta_equivalentes(p_a jsonb,p_b jsonb)
+    returns boolean language sql immutable security invoker set search_path=pg_catalog,public as $fn$
+        select coalesce(
+            (p_a->>'chave' is not null and p_b->>'chave' is not null
+                and p_a->>'chave'=p_b->>'chave'
+                and p_a->'componentes'->'comparacao'=p_b->'componentes'->'comparacao')
+            or (p_a->>'chave' is null and p_b->>'chave' is null
+                and p_a->'copia'->>'chave' is not null
+                and p_a->'copia'->>'chave'=p_b->'copia'->>'chave'
+                and p_a->'copia'->'comparacao'=p_b->'copia'->'comparacao'),false);
+        -- Cópias nunca ligam forte↔fraca ou fortes incompatíveis. Promover
+        -- evidência forte não permite apagá-la com enriquecimento de cópia.
+    $fn$ $ddl$;
 
     execute $ddl$
     create or replace function public._oferta_canonico(p_id bigint)
@@ -461,6 +491,12 @@ begin
                 raise exception 'Etapa 3: preço inválido' using errcode = '22023';
             end if;
         end loop;
+        if p_identidade->'copia'->>'chave' is not null and (
+            p_produto->>'preco' is null or
+            (p_identidade->'copia'->'comparacao'->>'preco_centavos')::numeric
+                is distinct from (p_produto->>'preco')::numeric*100) then
+            raise exception 'Etapa 3: preço incompatível com assinatura de cópia' using errcode='22023';
+        end if;
         if coalesce(p_evento->>'recebido_em','') !~
             '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?(Z|[+]00:00)$' then
             raise exception 'Etapa 3: recepção exige ISO UTC' using errcode = '22023';
@@ -504,11 +540,16 @@ begin
                  else 'retomado' end,v_card.foto_url;
             return;
         end if;
-        if p_identidade->>'chave' is not null and v_motivo is null then
+        if (p_identidade->>'chave' is not null or p_identidade->'copia'->>'chave' is not null)
+            and v_motivo is null then
             select p.* into v_card from public.produtos p
-                where p.identidade_versao = 2 and p.identidade_chave = p_identidade->>'chave'
-                    and p.identidade_dados->'componentes'->'comparacao'
-                        = p_identidade->'componentes'->'comparacao'
+                where p.identidade_versao = 2
+                    and ((p_identidade->>'chave' is not null and p.identidade_chave=p_identidade->>'chave')
+                        or (p_identidade->>'chave' is null and p.identidade_chave is null
+                            and p.identidade_dados->'copia'->>'chave'=p_identidade->'copia'->>'chave'))
+                    and public._oferta_equivalentes(p.identidade_dados,p_identidade)
+                    and (p_identidade->>'chave' is not null or p.preco*100=
+                        (p_identidade->'copia'->'comparacao'->>'preco_centavos')::numeric)
                     and p.estado_oferta in ('ativa','expirada','removida') and p.canonico_id is null
                     and (v_data >= p.inicio_em or (p.estado_oferta = 'ativa'
                         and p.expira_em >= clock_timestamp()
@@ -517,9 +558,10 @@ begin
                         -- anterior conhecida; incerteza histórica fica separada.
                         and not exists (select 1 from public.produtos anterior
                             where anterior.identidade_versao = 2
-                                and anterior.identidade_chave = p.identidade_chave
-                                and anterior.identidade_dados->'componentes'->'comparacao'
-                                    = p.identidade_dados->'componentes'->'comparacao'
+                                and ((p.identidade_chave is not null and anterior.identidade_chave=p.identidade_chave)
+                                    or (p.identidade_chave is null and anterior.identidade_chave is null
+                                        and anterior.identidade_dados->'copia'->>'chave'=p.identidade_dados->'copia'->>'chave'))
+                                and public._oferta_equivalentes(anterior.identidade_dados,p.identidade_dados)
                                 and anterior.canonico_id is null and anterior.inicio_em < p.inicio_em)))
                     and v_data <= p.expira_em
                 -- Contenção temporal comprovada precede extensão retroativa.
@@ -549,6 +591,24 @@ begin
                 (v_card.preco_observado_em,v_card.preco_canal_id,v_card.preco_msg_id);
             v_status := case when v_card.estado_oferta = 'removida' then 'removido'
                 when coalesce(v_vencedor,false) then 'atualizado' else 'reutilizado' end;
+            -- Uma observação válida ainda dentro da janela temporal da instância
+            -- pode estendê-la até o presente, mesmo se histórico/limpeza já a
+            -- marcaram expirada. Não reabrir remoção manual, atravessar lacuna,
+            -- nem competir com uma instância posterior conhecida. Retry sai antes.
+            if v_card.estado_oferta in ('ativa','expirada')
+                and v_data > v_card.ultima_aparicao_em
+                and v_data + v_card.janela_horas * interval '1 hour' > clock_timestamp()
+                and not exists(select 1 from public.produtos posterior
+                    where posterior.identidade_versao=2 and posterior.canonico_id is null
+                        and posterior.id<>v_id and posterior.inicio_em>v_card.inicio_em
+                        and ((p_identidade->>'chave' is not null and posterior.identidade_chave=p_identidade->>'chave')
+                            or (p_identidade->>'chave' is null and posterior.identidade_chave is null
+                                and posterior.identidade_dados->'copia'->>'chave'=p_identidade->'copia'->>'chave'))
+                        and public._oferta_equivalentes(posterior.identidade_dados,p_identidade)) then
+                update public.produtos set estado_oferta='ativa',terminal_em=null,
+                    ultima_aparicao_em=v_data,expira_em=v_data+janela_horas*interval '1 hour'
+                    where public.produtos.id=v_id;
+            end if;
             if v_card.estado_oferta = 'ativa'
                 and v_card.expira_em >= clock_timestamp() then
                 update public.produtos set inicio_em = least(inicio_em,v_data)
@@ -736,9 +796,22 @@ begin
                     <> p_identidade->'componentes'->'comparacao') then
             return query select v_id,'conflito'::text,v_card.foto_url; return;
         end if;
+        if p_identidade->>'chave' is null and p_identidade->'copia'->>'chave' is not null
+            and (v_card.identidade_versao is distinct from 2 or
+                (p_identidade->'copia'->'comparacao'->>'preco_centavos')::numeric
+                    is distinct from v_card.preco*100 or
+                not exists(select 1 from public.oferta_eventos e where e.canal_id=p_canal_id and e.msg_id=p_msg_id
+                    and (e.observacao->>'preco')::numeric*100=
+                        (p_identidade->'copia'->'comparacao'->>'preco_centavos')::numeric)) then
+            return query select v_id,'conflito'::text,v_card.foto_url; return;
+        end if;
+        if p_identidade->>'chave' is null and v_card.identidade_chave is not null then
+            return query select v_id,'incerto'::text,v_card.foto_url; return;
+        end if;
         update public.oferta_eventos set identidade_enriquecida = p_identidade
             where canal_id = p_canal_id and msg_id = p_msg_id;
-        if p_identidade->>'chave' is null then
+        if p_identidade->>'chave' is null and (p_identidade->'copia'->>'chave' is null
+            or v_card.identidade_chave is not null) then
             return query select v_id,'incerto'::text,v_card.foto_url; return;
         end if;
         update public.produtos set identidade_chave = p_identidade->>'chave',
@@ -748,9 +821,13 @@ begin
             exit when v_card.estado_oferta <> 'ativa' or v_card.expira_em is null
                 or v_card.expira_em <= clock_timestamp();
             select p.id into v_outro from public.produtos p where p.id <> v_id
-                and p.identidade_versao = 2 and p.identidade_chave = p_identidade->>'chave'
-                and p.identidade_dados->'componentes'->'comparacao'
-                    = p_identidade->'componentes'->'comparacao'
+                and p.identidade_versao = 2
+                and ((p_identidade->>'chave' is not null and p.identidade_chave=p_identidade->>'chave')
+                    or (p_identidade->>'chave' is null and p.identidade_chave is null
+                        and p.identidade_dados->'copia'->>'chave'=p_identidade->'copia'->>'chave'))
+                and public._oferta_equivalentes(p.identidade_dados,p_identidade)
+                and (p_identidade->>'chave' is not null or p.preco*100=
+                    (p_identidade->'copia'->'comparacao'->>'preco_centavos')::numeric)
                 and p.estado_oferta = 'ativa' and p.canonico_id is null
                 and p.expira_em > clock_timestamp() and p.janela_horas = v_card.janela_horas
                 and p.inicio_em <= v_card.expira_em and v_card.inicio_em <= p.expira_em
@@ -948,7 +1025,7 @@ begin
     -- Inclui auxiliares: nenhuma função nova herda EXECUTE de PUBLIC.
     for v_funcao in select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname = any(array[
-            '_oferta_validar_identidade','_oferta_canonico','_oferta_resumir','_oferta_verificar_indices',
+            '_oferta_validar_identidade','_oferta_canonico','_oferta_resumir','_oferta_verificar_indices','_oferta_equivalentes',
             'oferta_registrar','oferta_enriquecer','oferta_buscar','oferta_foto','oferta_confirmar',
             'oferta_remover','oferta_limpar','oferta_legado_registrar','oferta_legado_pronto',
             'midia_reservar_remocao','midia_confirmar_remocao']) loop

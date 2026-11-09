@@ -38,6 +38,8 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from .dinheiro import em_centavos
+
 
 _CAMPOS = (
     "loja", "produto", "anuncio", "vendedor", "sku", "variante", "estado",
@@ -159,6 +161,155 @@ def _declaracao(valor: Any, fonte: str) -> dict[str, Any] | None:
             "origem_declarada": origem_declarada}
 
 
+_MARCADOR_COMPRA = "<<DEALBOT_LINK_COMPRA_V1>>"
+_URL_TEXTO = re.compile(r"https?://[^\s<>`\"]+", re.IGNORECASE)
+
+
+def _publicacao_copia(produto: dict, texto: str, contexto: dict,
+                      regra: str | None, dados: dict, campos: dict,
+                      conflitos: list, problemas: list) -> dict | None:
+    """Cópia literal, não equivalência comercial. Não usa título nem rede.
+
+    Apenas CRLF vira LF. O destino é o resultado exato de ``_formato``; somente
+    a tag Amazon já comprovada é retirada. A única ligação de compra é marcada
+    no texto/contexto, conservando rótulos ocultos, ordem, outros links, códigos,
+    exclusões e declarações parciais. Proveniência das provas não entra no hash.
+    Falta de provas comerciais não é conflito, mas uma declaração inválida é.
+    """
+    if not regra or conflitos or any(p != "restricao_textual_nao_interpretada"
+                                    and p != "campo_nao_suportado" for p in problemas):
+        return None
+    if not isinstance(texto, str) or not texto.strip() or _MARCADOR_COMPRA in texto:
+        return None
+    try:
+        preco = em_centavos(produto.get("preco"))
+    except ValueError:
+        return None
+    original = produto.get("link")
+    if not isinstance(original, str) or not original:
+        return None
+    # Resolução não pode apagar seleção/query de uma URL comercial já legível.
+    normalizada = normalizar_url(original)
+    regra_original, dados_originais, erro_original = _formato(normalizada)
+    if regra_original:
+        if erro_original or regra_original != regra or dados_originais != dados:
+            return None
+    else:
+        if erro_original != "formato_nao_suportado":
+            return None
+        try:
+            u = urlsplit(normalizada)
+            if (u.scheme not in {"http", "https"} or u.netloc not in {"amzn.to", "a.co", "meli.la"}
+                    or "?" in normalizada or "#" in normalizada
+                    or not re.fullmatch(r"/[A-Za-z0-9_-]+/?", u.path)):
+                return None
+        except ValueError:
+            return None
+    # JSON é também a fronteira de entrada: não mutar contexto nem tolerar NaN.
+    try:
+        apresentacao = json.loads(json.dumps(contexto, ensure_ascii=True, allow_nan=False))
+    except (TypeError, ValueError):
+        return None
+    declaradas = apresentacao.pop("identidade", {})
+    if not isinstance(declaradas, dict):
+        return None
+    declaracoes = {}
+    for campo, valor in declaradas.items():
+        if valor is None:
+            declaracoes[campo] = {"estado": "desconhecido", "valor": None}
+            continue
+        prova = _declaracao(valor, "contexto")
+        if prova is None:
+            return None
+        declaracoes[campo] = {k: prova[k] for k in ("estado", "valor", "motivo") if k in prova}
+
+    links = apresentacao.get("links", [])
+    if not isinstance(links, list) or any(not isinstance(link, dict) for link in links):
+        return None
+    # Uma entidade visível que cobre exatamente a ocorrência não é uma segunda
+    # ligação. Duas ocorrências, entidades ocultas ou botões, entretanto, são.
+    visiveis = set()
+    for match in _URL_TEXTO.finditer(texto):
+        token = match.group()
+        if token.startswith(original) and all(c in ").,;!" for c in token[len(original):]):
+            visiveis.add((match.start(), match.start() + len(original)))
+    ligacoes = {("texto", inicio, fim) for inicio, fim in visiveis}
+    selecionados = []
+    for indice, link in enumerate(links):
+        if link.get("url") != original:
+            continue
+        origem = link.get("origem")
+        if origem == "entidade":
+            inicio, tamanho = link.get("offset"), link.get("length")
+            if (type(inicio) is not int or type(tamanho) is not int or inicio < 0 or tamanho <= 0
+                    or inicio + tamanho > len(texto) or link.get("rotulo") != texto[inicio:inicio + tamanho]):
+                return None
+            fim = inicio + tamanho
+            ligacoes.add(("texto" if (inicio, fim) in visiveis else "entidade", inicio, fim))
+        elif origem == "botao" and isinstance(link.get("rotulo"), str):
+            ligacoes.add(("botao", indice))
+        else:
+            return None
+        selecionados.append(indice)
+    if len(ligacoes) != 1:
+        return None
+    ligacao = next(iter(ligacoes))
+    trecho = (ligacao[1], ligacao[2]) if ligacao[0] == "texto" else None
+
+    def normalizar_texto_copia(valor: str) -> str:
+        return valor.replace("\r\n", "\n")
+
+    def fronteira(posicao: int) -> int:
+        if trecho:
+            inicio, fim = trecho
+            if inicio < posicao < fim:
+                raise ValueError("span_intersecta_compra")
+            if posicao >= fim:
+                return (len(normalizar_texto_copia(texto[:inicio])) + len(_MARCADOR_COMPRA)
+                        + len(normalizar_texto_copia(texto[fim:posicao])))
+        return len(normalizar_texto_copia(texto[:posicao]))
+
+    def ajustar_spans(valor: Any) -> None:
+        if isinstance(valor, dict):
+            if "offset" in valor or "length" in valor:
+                inicio, tamanho = valor.get("offset"), valor.get("length")
+                if (type(inicio) is not int or type(tamanho) is not int or inicio < 0
+                        or tamanho <= 0 or inicio + tamanho > len(texto)):
+                    raise ValueError("span_invalido")
+                valor["offset"] = fronteira(inicio)
+                valor["length"] = fronteira(inicio + tamanho) - fronteira(inicio)
+            for filho in valor.values():
+                ajustar_spans(filho)
+        elif isinstance(valor, list):
+            for filho in valor:
+                ajustar_spans(filho)
+
+    for indice in selecionados:
+        link = links[indice]
+        link["url"] = _MARCADOR_COMPRA
+        if trecho and link.get("origem") == "entidade":
+            link["rotulo"] = _MARCADOR_COMPRA
+    try:
+        ajustar_spans(apresentacao)
+    except ValueError:
+        return None
+    if trecho:
+        inicio, fim = trecho
+        conteudo = texto[:inicio] + _MARCADOR_COMPRA + texto[fim:]
+    else:
+        conteudo = texto
+    # Só URL não é conteúdo substantivo. Botão/rótulo não substitui o post bruto.
+    substantivo = texto[:trecho[0]] + texto[trecho[1]:] if trecho else texto
+    if not _URL_TEXTO.sub("", substantivo).strip():
+        return None
+    comparacao = {"destino": {"regra": regra, **dados},
+                  "conteudo": normalizar_texto_copia(conteudo), "preco_centavos": preco,
+                  "contexto": apresentacao, "declaracoes": declaracoes, "campos": campos}
+    serializado = json.dumps(comparacao, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return {"versao": 1, "chave": hashlib.sha256(serializado.encode("utf-8")).hexdigest(),
+            "comparacao": comparacao}
+
+
 def identificar(produto: dict, texto: str = "", contexto: dict | None = None,
                 url_resolvida: str | None = None) -> dict:
     """Retorna JSON v2; chave SHA256 completa ou null, sem mutar entradas.
@@ -254,7 +405,7 @@ def identificar(produto: dict, texto: str = "", contexto: dict | None = None,
                                      ensure_ascii=True).encode("utf-8")).hexdigest() if forte else None
     motivo = "identidade_forte" if forte else (
         "campos_conflitantes" if conflitos else (problemas[0] if problemas else "evidencia_incompleta"))
-    return {"versao": 2, "chave": chave, "componentes": {
+    resultado = {"versao": 2, "chave": chave, "copia_versao": 1, "componentes": {
         "regra": regra, "confianca": "forte" if forte else "insuficiente", "campos": campos,
         "evidencias": evidencias, "conflitos": sorted(set(conflitos)),
         "incertezas": sorted(set(problemas)), "desconhecidos": faltam,
@@ -262,3 +413,7 @@ def identificar(produto: dict, texto: str = "", contexto: dict | None = None,
                  "resolvida": url if url_resolvida is not None else None},
         "comparacao": comparacao,
     }, "motivo": motivo, "url_identidade": url}
+    copia = _publicacao_copia(produto, texto, contexto, regra, dados, campos, conflitos, problemas)
+    if copia is not None:
+        resultado["copia"] = copia
+    return resultado
