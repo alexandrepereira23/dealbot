@@ -65,6 +65,17 @@ dealbot/
 A `service_role key` fica **só no backend e no bot**. A `anon key` fica no
 frontend. Nunca troque as duas de lugar.
 
+Falhas transitórias ao validar o JWT (rede/timeout ou indisponibilidade do Auth)
+retornam **503**, sem executar a rota protegida. A classificação usa tipos,
+status e códigos do SDK, nunca o texto da mensagem. Credencial ausente ou
+comprovadamente rejeitada continua **401**; falha técnica desconhecida retorna
+**500** saneado, sem conceder acesso. Todas mantêm `Cache-Control: no-store`.
+No painel, 503 conserva sessão, cards/CTA e métricas válidas; o recuo existente
+retenta e o sucesso seguinte atualiza o snapshot e remove o aviso sem F5.
+Somente o 401 legítimo encerra a sessão. A regressão offline está coberta em
+`backend/tests/auth-etapa4.test.js` (Express/SDK reais, transporte Auth falso) e
+`frontend/tests/auth-transitoria-etapa4.test.cjs` (relógio/rede controlados).
+
 ## Setup
 
 ### 1. Supabase

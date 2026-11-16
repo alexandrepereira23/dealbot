@@ -18,7 +18,7 @@ const sessao = (id = "usuario-a", token = "token-falso-a") => ({
   user: { id, email: `${id}@example.invalid` }, access_token: token,
 });
 
-function ambiente({ pagina = true, inicial = sessao(), adiarSessao = false, env = {}, apiReal = false } = {}) {
+function ambiente({ pagina = true, inicial = sessao(), adiarSessao = false, env = {}, apiReal = false, cardReal = false } = {}) {
   const slots = [];
   let cursor = 0, sujo = true, desmontado = false, arvore;
   let efeitos = [], layouts = [];
@@ -129,7 +129,7 @@ function ambiente({ pagina = true, inicial = sessao(), adiarSessao = false, env 
     const modulo = { exports: {} };
     cache.set(arquivo, modulo.exports);
     function importar(nome) {
-      if (nome === "react") return reactFalso;
+      if (nome === "react") return arquivo.startsWith("components/") ? React : reactFalso;
       if (nome === "react/jsx-runtime") return require(nome);
       if (nome === "next/navigation") return { useRouter: () => router };
       if (nome === "@/lib/supabase" || nome === "./supabase") return { supabase };
@@ -137,6 +137,9 @@ function ambiente({ pagina = true, inicial = sessao(), adiarSessao = false, env 
       if (nome.startsWith("@/components/")) {
         const componente = nome.split("/").at(-1);
         assert.ok(componentes[componente]);
+        if (cardReal && componente === "ProdutoCard") {
+          componentes[componente] = carregar("components/ProdutoCard.tsx").ProdutoCard;
+        }
         return { [componente]: componentes[componente] };
       }
       if (nome.startsWith("@/")) return carregar(`${nome.slice(2)}.ts`);
