@@ -3,7 +3,8 @@
 import asyncio
 import json
 import time
-from typing import Any
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 from .avaliacao import avaliar_mensagem
 from .cache import CacheFiltros
@@ -14,6 +15,9 @@ from .modelos import Aguardar, ErroPermanente, FalhaLocal, Mensagem
 from .observabilidade import log
 from .politica import classificar
 from .repository import CAMPOS_PRODUTO
+
+
+TControle = TypeVar("TControle")
 
 
 class Pipeline:
@@ -31,12 +35,13 @@ class Pipeline:
         self.acordar_midias = asyncio.Event()
         self.parando = False
         self.tasks: list[asyncio.Task] = []
+        self._controles: set[asyncio.Task] = set()
         self.fatal: asyncio.Future | None = None
         self.ativos = {"oferta": 0, "midia": 0}
         self.max_ativos = {"oferta": 0, "midia": 0}
 
     def iniciar(self) -> None:
-        """Cria somente workers fixos, nunca uma task por mensagem."""
+        """Cria workers fixos; controles de claim/devolução são drenados em série."""
         self.fatal = asyncio.get_running_loop().create_future()
         for classe, quantidade in (("oferta", self.config.oferta_workers), ("midia", self.config.midia_workers)):
             for indice in range(quantidade):
@@ -75,18 +80,56 @@ class Pipeline:
         except asyncio.TimeoutError:
             pass
 
+    @staticmethod
+    async def _concluir_controle(tarefa: asyncio.Task[TControle]) -> TControle:
+        """Drena a mesma operação, inclusive sob cancelamentos repetidos."""
+        while not tarefa.done():
+            try:
+                await asyncio.shield(tarefa)
+            except asyncio.CancelledError:
+                pass
+        # Erro local não vira cancelamento bem-sucedido; sobe ao supervisor.
+        return tarefa.result()
+
+    def _criar_controle(self, operacao: Coroutine[Any, Any, TControle]) -> asyncio.Task[TControle]:
+        # A operação pertence ao mesmo worker fixo, inclusive para observadores
+        # de interleavings. Auxiliares são identificadas por este conjunto, não
+        # por substituir o nome do proprietário por uma classe genérica.
+        dono = asyncio.current_task()
+        tarefa = asyncio.create_task(operacao, name=dono.get_name() if dono else None)
+        self._controles.add(tarefa)
+        tarefa.add_done_callback(self._controles.discard)
+        return tarefa
+
+    async def _devolver_protegido(self, classe: str, job: dict) -> None:
+        tarefa = self._criar_controle(self._devolver(classe, job))
+        await self._concluir_controle(tarefa)
+
+    async def _reivindicar(self, classe: str) -> dict | None:
+        # Uma única auxiliar de controle por worker, sem fan-out por item da
+        # inbox. Não começa outra aquisição/devolução antes de drenar esta.
+        obter = (self.estado.obter_oferta(time.time(), self.cache.filtros is not None)
+                 if classe == "oferta" else self.estado.obter_midia(time.time()))
+        tarefa = self._criar_controle(obter)
+        try:
+            return await asyncio.shield(tarefa)
+        except asyncio.CancelledError:
+            job = await self._concluir_controle(tarefa)
+            if job is not None:
+                await self._devolver_protegido(classe, job)
+            raise
+
     async def _worker(self, classe: str) -> None:
         evento = self.acordar_ofertas if classe == "oferta" else self.acordar_midias
         while not self.parando:
             # Clear antes do SELECT evita perder notificação entre consulta e espera.
             evento.clear()
-            job = (await self.estado.obter_oferta(time.time(), self.cache.filtros is not None)
-                   if classe == "oferta" else await self.estado.obter_midia(time.time()))
+            job = await self._reivindicar(classe)
             if job is None:
                 await self._esperar(classe, evento)
                 continue
             if self.parando:
-                await self._devolver(classe, job)
+                await self._devolver_protegido(classe, job)
                 break
             self.ativos[classe] += 1
             self.max_ativos[classe] = max(self.max_ativos[classe], self.ativos[classe])
@@ -94,47 +137,50 @@ class Pipeline:
             log("trabalho_iniciado", classe=classe, canal_id=job["canal_id"], msg_id=job["msg_id"],
                 tentativa=job["tentativas"], espera_ms=round(max(0, time.time() - job.get("recebido_em", time.time())) * 1000, 2))
             try:
-                if classe == "oferta":
-                    await self._oferta(job)
-                else:
-                    await self._midia(job)
-            except asyncio.CancelledError:
-                await self._devolver(classe, job)
-                raise
-            except FalhaLocal:
-                # Sem armazenamento confiável, não inventar um retry gravado.
-                raise
-            except Exception as erro:
-                falha = classificar(erro, job["tentativas"], self.config.retry_base, self.config.retry_max)
-                proxima = time.time() + falha.espera
-                situacao = "falha_permanente" if falha.permanente else "retry"
-                if classe == "oferta":
-                    if falha.permanente:
-                        # Manter motivo e decisão; liberar owner só quando não houve efeito ambíguo.
-                        await self.estado.finalizar_oferta(job, situacao, resultado=falha.motivo)
+                try:
+                    if classe == "oferta":
+                        await self._oferta(job)
                     else:
-                        await self.estado.adiar_oferta(job, situacao, proxima, falha.motivo)
-                else:
-                    # Compensação pendente nunca vira terminal por falha de limpeza.
-                    atual = await self.estado.midia(job["produto_id"])
-                    if atual and falha.permanente and atual["enviado"] and not atual["compensar"]:
-                        # Upload confirmado também exige reconciliação quando o
-                        # erro seguinte é permanente. A foto pode ter sido
-                        # vinculada antes de a resposta se perder: o worker de
-                        # compensação verifica isso antes de remover o objeto.
-                        await self.estado.atualizar_midia(job["produto_id"],
-                            compensar=1, falha_apos_limpeza=falha.motivo)
-                        atual["compensar"] = 1
-                        atual["falha_apos_limpeza"] = falha.motivo
-                    if atual and atual["compensar"]:
-                        if falha.permanente and not atual["falha_apos_limpeza"]:
-                            await self.estado.atualizar_midia(job["produto_id"], falha_apos_limpeza=falha.motivo)
-                        situacao = "retry"
-                    await self.estado.atualizar_midia(job["produto_id"], estado=situacao,
-                        proxima=proxima, erro=falha.motivo,
-                        finalizado_em=time.time() if situacao == "falha_permanente" else None)
-                log("trabalho_falhou", classe=classe, canal_id=job["canal_id"], msg_id=job["msg_id"],
-                    motivo=falha.motivo, estado=situacao, tentativa=job["tentativas"], proxima=proxima)
+                        await self._midia(job)
+                except FalhaLocal:
+                    # Sem armazenamento confiável, não inventar um retry gravado.
+                    raise
+                except Exception as erro:
+                    falha = classificar(erro, job["tentativas"], self.config.retry_base, self.config.retry_max)
+                    proxima = time.time() + falha.espera
+                    situacao = "falha_permanente" if falha.permanente else "retry"
+                    if classe == "oferta":
+                        if falha.permanente:
+                            # Manter motivo e decisão; liberar owner só quando não houve efeito ambíguo.
+                            await self.estado.finalizar_oferta(job, situacao, resultado=falha.motivo)
+                        else:
+                            await self.estado.adiar_oferta(job, situacao, proxima, falha.motivo)
+                    else:
+                        # Compensação pendente nunca vira terminal por falha de limpeza.
+                        atual = await self.estado.midia(job["produto_id"])
+                        if atual and falha.permanente and atual["enviado"] and not atual["compensar"]:
+                            # Upload confirmado também exige reconciliação quando o
+                            # erro seguinte é permanente. A foto pode ter sido
+                            # vinculada antes de a resposta se perder: o worker de
+                            # compensação verifica isso antes de remover o objeto.
+                            await self.estado.atualizar_midia(job["produto_id"],
+                                compensar=1, falha_apos_limpeza=falha.motivo)
+                            atual["compensar"] = 1
+                            atual["falha_apos_limpeza"] = falha.motivo
+                        if atual and atual["compensar"]:
+                            if falha.permanente and not atual["falha_apos_limpeza"]:
+                                await self.estado.atualizar_midia(job["produto_id"], falha_apos_limpeza=falha.motivo)
+                            situacao = "retry"
+                        await self.estado.atualizar_midia(job["produto_id"], estado=situacao,
+                            proxima=proxima, erro=falha.motivo,
+                            finalizado_em=time.time() if situacao == "falha_permanente" else None)
+                    log("trabalho_falhou", classe=classe, canal_id=job["canal_id"], msg_id=job["msg_id"],
+                        motivo=falha.motivo, estado=situacao, tentativa=job["tentativas"], proxima=proxima)
+            except asyncio.CancelledError:
+                # Abrange também os awaits do tratamento de erro acima, não só
+                # o caminho feliz. Sem isso, novo cancelamento perde o claim.
+                await self._devolver_protegido(classe, job)
+                raise
             finally:
                 self.ativos[classe] -= 1
                 log("trabalho_finalizado", classe=classe, canal_id=job["canal_id"], msg_id=job["msg_id"],
@@ -145,6 +191,43 @@ class Pipeline:
             await self.estado.adiar_oferta(job, "retry", time.time(), "encerramento")
         else:
             await self.estado.atualizar_midia(job["produto_id"], estado="retry", proxima=time.time(), erro="encerramento")
+
+    def _destino_midia(self, job: dict):
+        """Fakes antigos não recebem job; adaptador coordenado recebe destino congelado."""
+        seletor = getattr(self.armazenamento, "para", None)
+        return seletor(job.get("destino", "supabase")) if seletor else self.armazenamento
+
+    async def _enviar_midia(self, job: dict, dados: bytes) -> str:
+        enviar_job = getattr(self.armazenamento, "enviar_job", None)
+        if enviar_job:
+            return await enviar_job(job, dados)
+        return await self._destino_midia(job).enviar(job["chave"], dados)
+
+    async def _remover_midia(self, job: dict) -> None:
+        remover_job = getattr(self.armazenamento, "remover_job", None)
+        if remover_job:
+            await remover_job(job)
+            return
+        await self._destino_midia(job).remover(job["chave"])
+
+    async def _publicacao_local_conhecida(self, job: dict) -> bool:
+        """Somente o adaptador local consegue provar publicação sem rede."""
+        if job.get("destino", "supabase") != "local":
+            return False
+        publicada_job = getattr(self.armazenamento, "publicada_job", None)
+        if publicada_job:
+            return bool(await publicada_job(job))
+        publicada = getattr(self._destino_midia(job), "publicada", None)
+        if publicada is None:
+            raise RuntimeError("publicacao_local_indisponivel")
+        return bool(await publicada(job["chave"]))
+
+    async def _url_publica_midia(self, job: dict) -> str:
+        """Consulta por job também atravessa o wrapper, sem perder o destino."""
+        url_publica_job = getattr(self.armazenamento, "url_publica_job", None)
+        if url_publica_job:
+            return await url_publica_job(job)
+        return await self._destino_midia(job).url_publica(job["chave"])
 
     async def _oferta(self, job: dict) -> None:
         if job["decisao"] is None:
@@ -188,7 +271,8 @@ class Pipeline:
             produto_id=job["produto_id"], ao_vincular=ao_vincular)
         duplicata = resultado.status == "duplicado"
         await self.estado.finalizar_oferta(job, "duplicata" if duplicata else "aprovada",
-            resultado.produto_id, midia=bool(job["tem_foto"] and not resultado.foto_url), resultado=resultado.status)
+            resultado.produto_id, midia=bool(job["tem_foto"] and not resultado.foto_url), resultado=resultado.status,
+            destino_midia=self.config.midia_modo)
         self.acordar_midias.set()
         self.acordar_ofertas.set()
         evento = await self.estado.evento(job["canal_id"], job["msg_id"])
@@ -201,10 +285,27 @@ class Pipeline:
     async def _midia(self, job: dict) -> None:
         produto_id = job["produto_id"]
         produto = await self.repositorio.buscar_produto(produto_id)
+        # No destino local, intenção sem URL pode significar crash após link(2),
+        # mas antes do checkpoint. Confere o final antes de baixar de novo ou de
+        # reservar tombstone para um objeto que talvez nem exista.
+        if (job["compensar"] and job.get("destino") == "local" and not job["enviado"]
+                and job["url"] is None):
+            if await self._publicacao_local_conhecida(job):
+                url_local = await self._url_publica_midia(job)
+                await self.estado.atualizar_midia(produto_id, enviado=1, url=url_local, compensar=0)
+                job = {**job, "enviado": 1, "url": url_local, "compensar": 0}
+            elif job["falha_apos_limpeza"]:
+                await self.estado.atualizar_midia(produto_id, estado="falha_permanente", compensar=0,
+                    erro=job["falha_apos_limpeza"], finalizado_em=time.time())
+                return
+            else:
+                await self.estado.atualizar_midia(produto_id, estado="retry", compensar=0,
+                    proxima=time.time(), erro="publicacao_local_ausente")
+                return
         if job["compensar"]:
             # Só remover a chave conhecida se não for a foto atualmente vinculada.
             if not produto or job["url"] is None or produto.get("foto_url") != job["url"]:
-                await self.armazenamento.remover(job["chave"])
+                await self._remover_midia(job)
             falha_final = job["falha_apos_limpeza"]
             retentar = produto is not None and not produto.get("foto_url") and not falha_final
             situacao = ("retry" if retentar else "removida" if produto is None else
@@ -217,7 +318,7 @@ class Pipeline:
         if produto is None or produto.get("foto_url"):
             if job["enviado"] and (produto is None or produto.get("foto_url") != job["url"]):
                 await self.estado.atualizar_midia(produto_id, compensar=1)
-                await self.armazenamento.remover(job["chave"])
+                await self._remover_midia(job)
             await self.estado.atualizar_midia(produto_id, estado="pronta" if produto else "removida",
                 compensar=0, finalizado_em=time.time(), erro=None)
             return
@@ -231,7 +332,7 @@ class Pipeline:
                 raise ErroPermanente("midia_excede_limite")
             # Gravar intenção ANTES do upload: timeout pode significar objeto já criado.
             await self.estado.atualizar_midia(produto_id, compensar=1)
-            url = await self.armazenamento.enviar(job["chave"], dados)
+            url = await self._enviar_midia(job, dados)
             await self.estado.atualizar_midia(produto_id, enviado=1, url=url, compensar=0)
         else:
             url = job["url"]
@@ -240,7 +341,7 @@ class Pipeline:
             atual = await self.repositorio.buscar_produto(produto_id)
             if atual is None or atual.get("foto_url") != url:
                 await self.estado.atualizar_midia(produto_id, compensar=1)
-                await self.armazenamento.remover(job["chave"])
+                await self._remover_midia(job)
         await self.estado.atualizar_midia(produto_id, estado="removida" if situacao == "removida" else "pronta",
             compensar=0, erro=None, finalizado_em=time.time())
         log("midia_concluida", produto_id=produto_id, estado=situacao)

@@ -57,7 +57,8 @@ PRAGMA user_version=4;
 
 
 def criar_v4(diretorio: Path) -> dict:
-    with sqlite3.connect(diretorio / "inbox.sqlite3") as db:
+    db = sqlite3.connect(diretorio / "inbox.sqlite3")
+    try:
         db.row_factory = sqlite3.Row
         db.executescript(SCHEMA_V4)
         db.execute("""INSERT INTO canais VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -75,8 +76,11 @@ def criar_v4(diretorio: Path) -> dict:
                    (42, CANAL, 10, "42_foto.jpg", "processando", 3, 0, "TimeoutError",
                     "https://storage.test/foto", 1, 1, None, "ErroPermanente"))
         db.execute("INSERT INTO resolucoes VALUES(?,?,?,?)", ("outro", 999, 2, "FloodWait"))
+        db.commit()
         return {tabela: [dict(r) for r in db.execute(f"SELECT * FROM {tabela}")]
                 for tabela in ("canais", "eventos", "midias", "donos_hash", "resolucoes")}
+    finally:
+        db.close()
 
 
 class TestEnvelope(unittest.TestCase):
@@ -246,11 +250,11 @@ class TestContextoSQLite(unittest.IsolatedAsyncioTestCase):
             if esperado["estado"] == "processando":
                 esperado["estado"] = "retry"
             self.assertEqual(await self.estado.evento(CANAL, antigo["msg_id"]), esperado)
-        self.assertEqual(await self.estado.midia(42), {**anterior["midias"][0], "estado": "retry"})
+        self.assertEqual(await self.estado.midia(42), {**anterior["midias"][0], "estado": "retry", "destino": "supabase"})
         self.assertEqual(await self.estado.resolucao("outro"), anterior["resolucoes"][0])
         donos = await self.estado._executar(lambda: [dict(r) for r in self.estado.db.execute("SELECT * FROM donos_hash")])
         self.assertEqual(donos, anterior["donos_hash"])
-        self.assertEqual(await self.estado._executar(lambda: self.estado.db.execute("PRAGMA user_version").fetchone()[0]), 6)
+        self.assertEqual(await self.estado._executar(lambda: self.estado.db.execute("PRAGMA user_version").fetchone()[0]), 7)
         job = await self.estado.obter_oferta(1000, True)
         self.assertEqual((job["msg_id"], job["decisao"], job["hash"], job["tentativas"]),
                          (8, anterior["eventos"][0]["decisao"], "hash-congelado", 3))
@@ -267,12 +271,16 @@ class TestContextoSQLite(unittest.IsolatedAsyncioTestCase):
             with self.subTest(versao=versao), tempfile.TemporaryDirectory() as tmp:
                 diretorio = Path(tmp)
                 anterior = criar_v4(diretorio)
-                with sqlite3.connect(diretorio / "inbox.sqlite3") as db:
+                db = sqlite3.connect(diretorio / "inbox.sqlite3")
+                try:
                     db.execute("DROP TABLE resolucoes")
                     db.execute("ALTER TABLE canais DROP COLUMN geracao")
                     db.execute("ALTER TABLE eventos DROP COLUMN disponibilizado_em")
                     db.execute("ALTER TABLE midias DROP COLUMN falha_apos_limpeza")
                     db.execute(f"PRAGMA user_version={versao}")
+                    db.commit()
+                finally:
+                    db.close()
                 estado = EstadoLocal(diretorio)
                 await estado.abrir()
                 try:
@@ -282,6 +290,7 @@ class TestContextoSQLite(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((evento["contexto"], evento["diagnostico"], evento["disponibilizado_em"]), ("{}", "{}", None))
                     self.assertEqual((await estado.canal(CANAL))["geracao"], 0)
                     self.assertIsNone((await estado.midia(42))["falha_apos_limpeza"])
+                    self.assertEqual((await estado.midia(42))["destino"], "supabase")
                 finally:
                     await estado.fechar()
 
@@ -298,7 +307,8 @@ class TestContextoSQLite(unittest.IsolatedAsyncioTestCase):
         with patch("src.estado.sqlite3.connect", side_effect=lambda *a, **k: conectar(*a, **k, factory=ConexaoComFalha)):
             with self.assertRaises(FalhaLocal):
                 await self.estado.abrir()
-        with conectar(self.diretorio / "inbox.sqlite3") as db:
+        db = conectar(self.diretorio / "inbox.sqlite3")
+        try:
             db.row_factory = sqlite3.Row
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
             colunas = {r[1] for r in db.execute("PRAGMA table_info(eventos)")}
@@ -306,6 +316,8 @@ class TestContextoSQLite(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("diagnostico", colunas)
             for tabela, registros in anterior.items():
                 self.assertEqual([dict(r) for r in db.execute(f"SELECT * FROM {tabela}")], registros)
+        finally:
+            db.close()
         self.estado = EstadoLocal(self.diretorio)
         await self.estado.abrir()
         self.assertEqual((await self.estado.evento(CANAL, 8))["estado"], "retry")

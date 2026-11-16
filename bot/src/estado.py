@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import secrets
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -76,7 +77,7 @@ class EstadoLocal:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA busy_timeout=2000")
         versao = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if versao not in (0, 1, 2, 3, 4, 5, 6):
+        if versao not in (0, 1, 2, 3, 4, 5, 6, 7):
             raise FalhaLocal("versao_local_nao_suportada")
         self._migrar()
         if os.name != "nt":
@@ -152,13 +153,16 @@ class EstadoLocal:
                 ("eventos", "remoto_confirmado", "INTEGER NOT NULL DEFAULT 0"),
                 ("eventos", "referencia_remota", "INTEGER NOT NULL DEFAULT 0"),
                 ("enriquecimentos", "tentativas_rpc", "INTEGER NOT NULL DEFAULT 0"),
+                # Jobs anteriores à etapa 4 pertencem sempre ao Storage legado.
+                # O destino não pode depender da configuração vigente no restart.
+                ("midias", "destino", "TEXT NOT NULL DEFAULT 'supabase'"),
             ):
                 if coluna not in {r[1] for r in db.execute(f"PRAGMA table_info({tabela})")}:
                     db.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}")
             db.execute("UPDATE eventos SET estado='retry' WHERE estado='processando'")
             db.execute("UPDATE midias SET estado='retry' WHERE estado='processando'")
             db.execute("UPDATE enriquecimentos SET estado='retry' WHERE estado='processando'")
-            db.execute("PRAGMA user_version=6")
+            db.execute("PRAGMA user_version=7")
             db.commit()
         except BaseException:
             db.rollback()
@@ -376,8 +380,10 @@ class EstadoLocal:
         await self._executar(op)
 
     async def finalizar_oferta(self, job: dict, estado: str, produto_id: int | None = None,
-                               midia: bool = False, resultado: str | None = None,
-                               diagnostico: dict | None = None) -> None:
+                                midia: bool = False, resultado: str | None = None,
+                                diagnostico: dict | None = None, destino_midia: str = "supabase") -> None:
+        if destino_midia not in {"supabase", "local"}:
+            raise ValueError("destino_midia_invalido")
         def op() -> None:
             db = self._conexao()
             with db:
@@ -389,9 +395,10 @@ class EstadoLocal:
                      job["canal_id"], job["msg_id"]))
                 db.execute("DELETE FROM donos_hash WHERE canal_id=? AND msg_id=?", (job["canal_id"], job["msg_id"]))
                 if midia and produto_id is not None:
-                    chave = f"{produto_id}_{job['canal_id']}_{job['msg_id']}.jpg"
-                    db.execute("INSERT OR IGNORE INTO midias(produto_id,canal_id,msg_id,chave) VALUES(?,?,?,?)",
-                               (produto_id, job["canal_id"], job["msg_id"], chave))
+                    chave = (secrets.token_hex(16) + ".webp" if destino_midia == "local"
+                             else f"{produto_id}_{job['canal_id']}_{job['msg_id']}.jpg")
+                    db.execute("INSERT OR IGNORE INTO midias(produto_id,canal_id,msg_id,chave,destino) VALUES(?,?,?,?,?)",
+                               (produto_id, job["canal_id"], job["msg_id"], chave, destino_midia))
         await self._executar(op)
 
     async def adiar_oferta(self, job: dict, estado: str, proxima: float, erro: str) -> None:

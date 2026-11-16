@@ -19,7 +19,9 @@ def motivo_erro(erro: BaseException) -> str:
     """Só classe/status: mensagens de SDK podem conter URLs, tokens e texto."""
     from .modelos import Aguardar, ErroPermanente
     motivos = {"midia_excede_limite", "mensagem_apagada", "produto_vinculado_removido",
-               "hash_em_reconciliacao", "http_limitado", "limite_remoto"}
+               "hash_em_reconciliacao", "http_limitado", "limite_remoto",
+               "midia_invalida", "midia_animada", "midia_pixels_excede_limite",
+               "midia_saida_excede_limite"}
     if isinstance(erro, (ErroPermanente, Aguardar)) and erro.args and erro.args[0] in motivos:
         return str(erro.args[0])
     status = getattr(erro, "status_code", None)

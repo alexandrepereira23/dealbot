@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 
 import { env } from "./config/env.js";
 import routes from "./routes/index.js";
+import midiaRoutes from "./routes/midia.routes.js";
 import { errorHandler, notFound } from "./middlewares/error.middleware.js";
 
 const origensPermitidas = env.corsOrigin
@@ -35,13 +36,24 @@ export function criarApp() {
         return cb(new Error("Origem não permitida"));
       },
       credentials: true,
+      exposedHeaders: ["Retry-After"],
     }),
   );
 
   // Limite agressivo no body — endpoints só recebem JSON pequeno.
   app.use(express.json({ limit: "100kb" }));
 
-  // Rate limit global. Volume legítimo (~60 req/min/usuário) cabe folgado.
+  // Fotos finais públicas não atravessam o roteador autenticado de dados.
+  app.use("/media", midiaRoutes);
+
+  // Snapshots de painel nunca podem ser reaproveitados como atualização atual,
+  // inclusive quando o rate limiter encerra a requisição antes do roteador.
+  app.use("/api", (req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  });
+
+  // Rate limit global. Volume legítimo (~14 req/min/aba) cabe folgado.
   app.use(
     "/api",
     rateLimit({

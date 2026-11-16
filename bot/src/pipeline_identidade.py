@@ -21,14 +21,35 @@ class MidiaCoordenada:
         self.armazenamento = armazenamento
         self.repositorio = repositorio
 
-    async def enviar(self, chave, dados):
-        return await self.armazenamento.enviar(chave, dados)
+    def _destino(self, job):
+        seletor = getattr(self.armazenamento, "para", None)
+        return seletor(job.get("destino", "supabase")) if seletor else self.armazenamento
 
-    async def remover(self, chave):
-        url = await self.armazenamento.url_publica(chave)
+    async def enviar_job(self, job, dados):
+        return await self._destino(job).enviar(job["chave"], dados)
+
+    async def publicada_job(self, job):
+        """Prova local pelo mesmo destino congelado usado no envio/remoção."""
+        if job.get("destino", "supabase") != "local":
+            return False
+        publicada = getattr(self._destino(job), "publicada", None)
+        if publicada is None:
+            raise RuntimeError("publicacao_local_indisponivel")
+        return await publicada(job["chave"])
+
+    async def url_publica_job(self, job):
+        return await self._destino(job).url_publica(job["chave"])
+
+    async def remover_job(self, job):
+        armazenamento = self._destino(job)
+        url = job.get("url") or await armazenamento.url_publica(job["chave"])
         if await self.repositorio.reservar_remocao(url):
-            await self.armazenamento.remover(chave)
+            await armazenamento.remover(job["chave"])
             await self.repositorio.confirmar_remocao(url)
+
+    async def limpar_temporarios(self):
+        limpar = getattr(self.armazenamento, "limpar_temporarios", None)
+        return await limpar() if limpar else 0
 
 
 class PipelineIdentidade(Pipeline):
@@ -59,7 +80,8 @@ class PipelineIdentidade(Pipeline):
                 await self.estado.vincular(job, resultado.produto_id)
                 await self.estado.finalizar_oferta(job, "duplicata" if resultado.status == "duplicado" else "aprovada",
                     resultado.produto_id, midia=bool(job["tem_foto"] and not resultado.foto_url
-                    and resultado.status != "removido"), resultado=resultado.status)
+                    and resultado.status != "removido"), resultado=resultado.status,
+                    destino_midia=self.config.midia_modo)
                 self.acordar_midias.set()
                 return
             return await super()._oferta(job)
@@ -95,7 +117,8 @@ class PipelineIdentidade(Pipeline):
             await self.estado.agendar_enriquecimento(job, resultado.produto_id, produto["link"])
         duplicado = resultado.status in {"duplicado", "atualizado"}
         await self.estado.finalizar_oferta(job, "duplicata" if duplicado else "aprovada", resultado.produto_id,
-            midia=bool(job["tem_foto"] and not resultado.foto_url and resultado.status != "removido"), resultado=resultado.status)
+            midia=bool(job["tem_foto"] and not resultado.foto_url and resultado.status != "removido"), resultado=resultado.status,
+            destino_midia=self.config.midia_modo)
         self.acordar_midias.set()
         self.acordar_enriquecimento.set()
         evento = await self.estado.evento(job["canal_id"], job["msg_id"])

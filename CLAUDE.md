@@ -7,15 +7,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Dealbot scrapes promotion offers from Telegram channels and surfaces them in a web app. Data flows one direction:
 
 ```
-Telegram → Bot (Python, Telethon) → Supabase (Postgres + Storage) → API (Node/Express MVC) → Frontend (Next.js)
+Telegram → Bot (Python, Telethon) → Supabase (Postgres) → API (Node/Express MVC) → Frontend (Next.js)
+                 └──────── mídia opcional no volume dedicado ────────↑
 ```
 
-Supabase is the single shared datastore; the three services never call each other directly, they all read/write Supabase. The codebase (identifiers, comments, error strings) is in **Portuguese** — match it when editing.
+Supabase remains the shared datastore for offers/Auth. When `BOT_MIDIA_MODO=local`, bot and API additionally share only a dedicated media volume: the bot writes immutable WebP finals and the API reads/removes known keys after the existing remote reservation protocol. They never share the bot SQLite state. Legacy media remains in Supabase Storage. The codebase (identifiers, comments, error strings) is in **Portuguese** — match it when editing.
 
 ## Three components, three directories
 
-- `bot/` — Python capture worker. Listens to Telegram, extracts structured product data, applies filters, writes to Supabase.
-- `backend/` — Express REST API (`/api/*`). Layered MVC, serves the frontend.
+- `bot/` — Python capture worker. Listens to Telegram, extracts structured product data, applies filters, writes to Supabase and, optionally, publishes bounded local WebP media.
+- `backend/` — Express REST API (`/api/*`) plus public read-only `/media/<opaque>.webp`. Layered MVC, serves the frontend.
 - `frontend/` — Next.js 14 App Router dashboard (login, product list, filter CRUD).
 - `supabase/schema.sql` — run once in the Supabase SQL Editor to create tables, RLS policies, and the `produtos` storage bucket.
 
@@ -49,7 +50,7 @@ for persistent state, limits and commands. No Python lint tool is configured.
 
 The `bot/` directory contains two separate, non-equivalent entrypoints. Know which one you are touching:
 
-- **`bot/src/` (current, active)** — `main.py` composes the durable SQLite inbox (`estado.py`), bounded workers (`pipeline_identidade.py`, extending the legacy `pipeline.py`), history/config refresh (`recuperacao.py`), async Supabase repository and isolated media adapter. `extractor.py` is **pure regex/heuristics — no AI**. `dealbot.service` (systemd) runs `python -m src.main`; use Python 3.12 and the pinned `requirements.txt`. Live capture plus paginated recovery; one collector instance with persistent private state. Stage 3 uses versioned strong identity and transactional RPCs via `repository_identidade.py`; legacy `dedup.py`/`pipeline.py` remain for frozen old decisions and regression tests, never as a silent fallback when new schema is missing. Preserve frozen decisions/hashes and durability protections. The AI extractor was deliberately removed (commit "Remoção de filtro por IA").
+- **`bot/src/` (current, active)** — `main.py` composes the durable SQLite inbox (`estado.py`), bounded workers (`pipeline_identidade.py`, extending the legacy `pipeline.py`), history/config refresh (`recuperacao.py`), async Supabase repository and dual media adapter. Local media uses Pillow 12.0.0 on a separate bounded executor; `midias.destino` is frozen at scheduling (legacy/no destination means Supabase). `extractor.py` is **pure regex/heuristics — no AI**. `dealbot.service` (systemd) runs `python -m src.main`; use Python 3.12 and the pinned `requirements.txt`. Live capture plus paginated recovery; one collector instance with persistent private state. Stage 3 uses versioned strong identity and transactional RPCs via `repository_identidade.py`; legacy `dedup.py`/`pipeline.py` remain for frozen old decisions and regression tests, never as a silent fallback when new schema is missing. Preserve frozen decisions/hashes and durability protections. The AI extractor was deliberately removed (commit "Remoção de filtro por IA").
 - **`bot/bot.py` (legacy, dead)** — self-contained monolith using Gemini (`google.generativeai`, `gemini-1.5-flash`) for extraction, supporting both `live` and `polling` modes. It depends on `google-generativeai` and `requests`, which are **not in `requirements.txt`**, so it will not run as-is. This is the **only file still referencing AI** — the project no longer uses it. Treat as dead code; do not assume it reflects current behavior, and don't copy its Gemini/`MODO=polling` patterns into new code.
 
 Docs (`README.md`, `.env.example`, `bot/.env.example`) have been scrubbed of Gemini/`MODO` references and now describe the regex-only `src/` worker. The `bot_state` table remains in `schema.sql` but is only used by the dead polling path in `bot.py`.

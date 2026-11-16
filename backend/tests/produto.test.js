@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createClient } from "@supabase/supabase-js";
+import ws from "ws";
 import { criarProdutoModel } from "../src/models/produto.model.js";
 import { criarProdutoService, ProdutoService } from "../src/services/produto.service.js";
 import router from "../src/routes/produto.routes.js";
@@ -21,6 +22,8 @@ function ambiente(registros = [], retencaoHoras = 48, instante = AGORA) {
   let erro = null;
   const cliente = createClient("https://projeto.example.invalid", "chave-sintetica", {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    // Igual à composição produtiva: Node 20 não fornece WebSocket global.
+    realtime: { transport: ws },
     global: { fetch: async (input, opcoes) => {
       const url = new URL(input);
       const consulta = { url, metodo: opcoes.method, corpo: opcoes.body && JSON.parse(opcoes.body) };

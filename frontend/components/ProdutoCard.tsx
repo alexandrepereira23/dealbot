@@ -41,8 +41,51 @@ function listarCanais(produto: Produto): string[] {
     .filter((c): c is string => c !== null);
 }
 
+/** `/media` é relativo ao host da API, nunca ao prefixo `/api` da própria rota. */
+export function resolverFotoUrl(fotoUrl: string | null | undefined): string | null {
+  if (!fotoUrl) return null;
+  try {
+    if (fotoUrl.startsWith("/media/")) {
+      const origemPagina = typeof window === "undefined" ? "http://localhost:3000" : window.location.origin;
+      const api = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3333/api";
+      return new URL(fotoUrl, new URL(api, origemPagina).origin).toString();
+    }
+    const absoluta = new URL(fotoUrl);
+    return absoluta.protocol === "https:" || absoluta.protocol === "http:" ? absoluta.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function FotoProduto({ foto, titulo }: { foto: string | null; titulo: string }) {
+  // A key no chamador desmonta este estado quando a URL troca; por isso um erro
+  // atrasado de A nunca oculta B e o card/cupom/CTA continuam a mesma instância.
+  const [carregando, setCarregando] = useState(Boolean(foto));
+  const [erro, setErro] = useState(false);
+  return <>
+    {foto && !erro && (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={foto}
+        alt={`Foto de ${titulo}`}
+        loading="lazy"
+        decoding="async"
+        className={carregando ? "is-loading" : ""}
+        onLoad={() => setCarregando(false)}
+        onError={() => {
+          setCarregando(false);
+          setErro(true);
+        }}
+      />
+    )}
+    {(!foto || erro || carregando) && <div className="produto__no-photo">Sem foto</div>}
+  </>;
+}
+
 export function ProdutoCard({ produto }: { produto: Produto }) {
   const [copiado, setCopiado] = useState(false);
+  const [erroAoCopiar, setErroAoCopiar] = useState(false);
+  const foto = resolverFotoUrl(produto.foto_url);
   const off = desconto(produto);
   const dataFmt = formatarData(produto);
   const canais = listarCanais(produto);
@@ -59,26 +102,26 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
 
   function copiarCupom() {
     if (!produto.cupom) return;
-    navigator.clipboard.writeText(produto.cupom).then(() => {
-      setCopiado(true);
-      setTimeout(() => setCopiado(false), 2000);
-    });
+    setErroAoCopiar(false);
+    try {
+      const escrita = navigator.clipboard?.writeText(produto.cupom);
+      if (!escrita) {
+        setErroAoCopiar(true);
+        return;
+      }
+      escrita.then(() => {
+        setCopiado(true);
+        setTimeout(() => setCopiado(false), 2000);
+      }).catch(() => setErroAoCopiar(true));
+    } catch {
+      setErroAoCopiar(true);
+    }
   }
 
   return (
-    <article className="produto fade-in">
+    <article className="produto fade-in" data-produto-id={produto.id}>
       <div className="produto__media">
-        {produto.foto_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={produto.foto_url}
-            alt={produto.titulo}
-            loading="lazy"
-            decoding="async"
-          />
-        ) : (
-          <div className="produto__no-photo">Sem foto</div>
-        )}
+        <FotoProduto key={foto ?? "sem-foto"} foto={foto} titulo={produto.titulo} />
         {off && <span className="produto__badge">-{off}%</span>}
       </div>
       <div className="produto__body">
@@ -121,6 +164,7 @@ export function ProdutoCard({ produto }: { produto: Produto }) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               )}
             </button>
+            {erroAoCopiar && <span className="produto__coupon-error" role="status">Não foi possível copiar</span>}
           </div>
         )}
         {produto.link && (

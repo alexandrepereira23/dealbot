@@ -17,6 +17,16 @@ function inteiroPositivo(chave, padrao, maximo, minimo = 1) {
   return valor;
 }
 
+function diretorioAbsolutoOpcional(chave) {
+  const valor = process.env[chave];
+  if (!valor) return null;
+  // Não resolver/normalizar aqui: o model verifica lstat e nunca aceita raiz-link.
+  if (!/^(?:[A-Za-z]:[\\/]|\/)/.test(valor)) {
+    throw new Error(`Variável de ambiente inválida: ${chave}`);
+  }
+  return valor;
+}
+
 // Em produção, CORS_ORIGIN é obrigatório — nunca abrir para "*" sem querer.
 // Em dev, default para o Next em localhost:3000.
 function resolverCorsOrigin() {
@@ -44,4 +54,6 @@ export const env = {
   limpezaIntervaloMin: inteiroPositivo("LIMPEZA_INTERVALO_MIN", 60, 10080),
   limpezaLote: inteiroPositivo("LIMPEZA_LOTE", 100, 500),
   limpezaMaxLotes: inteiroPositivo("LIMPEZA_MAX_LOTES", 10, 100),
+  midiaLocalDir: diretorioAbsolutoOpcional("MIDIA_LOCAL_DIR"),
+  midiaSaidaMaxBytes: inteiroPositivo("MIDIA_SAIDA_MAX_BYTES", 358400, 1048576),
 };

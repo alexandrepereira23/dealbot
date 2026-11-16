@@ -29,6 +29,12 @@ class Config:
     rede_timeout: float = 10
     midia_timeout: float = 30
     midia_max_bytes: int = 10485760
+    midia_modo: str = "supabase"
+    midia_local_dir: Path | None = None
+    midia_max_pixels: int = 24000000
+    midia_lado_max: int = 960
+    midia_saida_max_bytes: int = 358400
+    midia_transform_workers: int = 1
     retry_base: float = 1
     retry_max: float = 300
     shutdown_timeout: float = 25
@@ -43,8 +49,23 @@ class Config:
 
     def __post_init__(self) -> None:
         for nome, valor in vars(self).items():
-            if nome != "state_dir" and (valor <= 0 or not float(valor) < float("inf")):
+            if nome not in {"state_dir", "midia_modo", "midia_local_dir"} and (valor <= 0 or not float(valor) < float("inf")):
                 raise ValueError(f"Configuração inválida: {nome} precisa ser positiva e finita")
+        if self.midia_modo not in {"supabase", "local"}:
+            raise ValueError("BOT_MIDIA_MODO precisa ser supabase ou local")
+        if self.midia_modo == "local" and self.midia_local_dir is None:
+            raise ValueError("MIDIA_LOCAL_DIR é obrigatório no modo local")
+        if self.midia_local_dir is not None and not self.midia_local_dir.is_absolute():
+            raise ValueError("MIDIA_LOCAL_DIR precisa ser absoluto")
+        if self.midia_local_dir is not None:
+            midia = self.midia_local_dir.expanduser().resolve(strict=False)
+            estado = self.state_dir.expanduser().resolve(strict=False)
+            # A mídia é compartilhada com a API; estado e código não são. Não
+            # permitir igualdade, filho ou pai evita expor SQLite/sessões quando
+            # o diretório de mídia recebe grupo 2770 na publicação.
+            raiz_codigo = Path(__file__).resolve().parents[2]
+            if any(self._caminhos_sobrepostos(midia, protegido) for protegido in (estado, raiz_codigo)):
+                raise ValueError("MIDIA_LOCAL_DIR deve ser dedicado e não pode sobrepor estado ou código")
         if self.recuperacao_lote > self.buffer_max:
             raise ValueError("BOT_RECUPERACAO_LOTE não pode exceder BOT_BUFFER_MAX")
         if self.retry_max < self.retry_base:
@@ -58,9 +79,20 @@ class Config:
         if self.limpeza_continuacao > 60:
             raise ValueError("BOT_LIMPEZA_CONTINUACAO_S não pode exceder 60")
         for nome, limite in (("enriquecimento_workers", 8), ("resolucao_redirects", 10),
-                             ("resolucao_max_bytes", 1048576), ("resolucao_tentativas", 10)):
+                              ("resolucao_max_bytes", 1048576), ("resolucao_tentativas", 10)):
             if type(getattr(self, nome)) is not int or getattr(self, nome) > limite:
                 raise ValueError(f"{nome} deve ser inteiro positivo até {limite}")
+        for nome, limite in (("midia_max_pixels", 100000000), ("midia_lado_max", 4096),
+                             ("midia_saida_max_bytes", 1048576), ("midia_transform_workers", 4)):
+            if type(getattr(self, nome)) is not int or getattr(self, nome) > limite:
+                raise ValueError(f"{nome} deve ser inteiro positivo até {limite}")
+
+    @staticmethod
+    def _caminhos_sobrepostos(um: Path, outro: Path) -> bool:
+        try:
+            return Path(os.path.commonpath((str(um), str(outro)))) in (um, outro)
+        except ValueError:
+            return False
 
     @classmethod
     def carregar(cls) -> "Config":
@@ -75,8 +107,11 @@ class Config:
             "recuperacao_intervalo": "RECUPERACAO_INTERVALO_S", "bootstrap_horas": "BOOTSTRAP_HORAS",
             "recuperacao_pausa": "RECUPERACAO_PAUSA_S",
             "recuperacao_lote": "RECUPERACAO_LOTE", "prioridade_live_cota": "PRIORIDADE_LIVE_COTA",
-            "rede_timeout": "REDE_TIMEOUT_S", "midia_timeout": "MIDIA_TIMEOUT_S",
-            "midia_max_bytes": "MIDIA_MAX_BYTES", "retry_base": "RETRY_BASE_S",
+             "rede_timeout": "REDE_TIMEOUT_S", "midia_timeout": "MIDIA_TIMEOUT_S",
+             "midia_max_bytes": "MIDIA_MAX_BYTES", "midia_modo": "MIDIA_MODO",
+             "midia_max_pixels": "MIDIA_MAX_PIXELS", "midia_lado_max": "MIDIA_LADO_MAX",
+             "midia_saida_max_bytes": "MIDIA_SAIDA_MAX_BYTES",
+             "midia_transform_workers": "MIDIA_TRANSFORM_WORKERS", "retry_base": "RETRY_BASE_S",
             "retry_max": "RETRY_MAX_S", "shutdown_timeout": "SHUTDOWN_TIMEOUT_S",
             "janela_oferta_horas": "JANELA_OFERTA_HORAS", "enriquecimento_workers": "ENRIQUECIMENTO_WORKERS",
             "resolucao_timeout": "RESOLUCAO_TIMEOUT_S", "resolucao_redirects": "RESOLUCAO_REDIRECTS",
@@ -89,6 +124,8 @@ class Config:
             tipo = cls.__annotations__[nome]
             valores[nome] = tipo(os.environ.get(f"BOT_{env}", str(getattr(padrao, nome))))
         valores["state_dir"] = Path(os.environ.get("BOT_STATE_DIR", str(padrao.state_dir))).expanduser()
+        diretorio_midia = os.environ.get("MIDIA_LOCAL_DIR")
+        valores["midia_local_dir"] = Path(diretorio_midia).expanduser() if diretorio_midia else None
         return cls(**valores)
 
 

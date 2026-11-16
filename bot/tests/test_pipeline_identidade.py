@@ -459,7 +459,8 @@ class TestMigracaoIdentidadeV6(unittest.IsolatedAsyncioTestCase):
             diretorio = Path(temporario)
             # Schema v5 independente do migrador novo: não cria v6 para depois
             # só trocar user_version, o que esconderia colunas ausentes.
-            with sqlite3.connect(diretorio / "inbox.sqlite3") as db:
+            db = sqlite3.connect(diretorio / "inbox.sqlite3")
+            try:
                 db.executescript("""
                     CREATE TABLE canais(canal_id INTEGER PRIMARY KEY,username TEXT NOT NULL,
                         access_hash TEXT,aliases TEXT NOT NULL DEFAULT '[]',cursor INTEGER NOT NULL DEFAULT 0,
@@ -497,11 +498,14 @@ class TestMigracaoIdentidadeV6(unittest.IsolatedAsyncioTestCase):
                 db.execute("""INSERT INTO midias(produto_id,canal_id,msg_id,chave,estado,tentativas,url,enviado,compensar)
                     VALUES(81,-100111,7,'81_-100111_7.jpg','processando',2,'https://storage.invalid/antiga',1,1)""")
                 db.execute("INSERT INTO resolucoes VALUES('canal_pendente',456,2,'FloodWait')")
+                db.commit()
+            finally:
+                db.close()
             estado = EstadoLocal(diretorio)
             try:
                 await estado.abrir()
                 evento = await estado.evento(-100111, 7)
-                self.assertEqual((await linhas(estado, "PRAGMA user_version"))[0]["user_version"], 6)
+                self.assertEqual((await linhas(estado, "PRAGMA user_version"))[0]["user_version"], 7)
                 self.assertEqual(evento["decisao"], decisao)
                 self.assertEqual(evento["hash"], "HASH-congelado")
                 self.assertEqual(evento["produto_id"], 81)
@@ -517,6 +521,7 @@ class TestMigracaoIdentidadeV6(unittest.IsolatedAsyncioTestCase):
                 midia = await estado.midia(81)
                 self.assertEqual((midia["estado"], midia["tentativas"], midia["enviado"], midia["compensar"]),
                                  ("retry", 2, 1, 1))
+                self.assertEqual(midia["destino"], "supabase")
                 self.assertEqual(len(await linhas(estado, "SELECT * FROM donos_hash")), 1)
                 self.assertEqual((await estado.resolucao("canal_pendente"))["tentativas"], 2)
                 self.assertEqual(await linhas(estado, "SELECT * FROM cache_urls"), [])

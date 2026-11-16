@@ -22,7 +22,7 @@ const csp = [
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
-  `img-src 'self' data: blob: ${supabaseOrigin}`.trim(),
+  `img-src 'self' data: blob: ${supabaseOrigin} ${apiOrigin}`.replace(/\s+/g, " ").trim(),
   `connect-src 'self' ${supabaseOrigin} ${supabaseWs} ${apiOrigin}`.replace(/\s+/g, " ").trim(),
   "frame-ancestors 'none'",
   "base-uri 'self'",

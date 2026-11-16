@@ -6,8 +6,9 @@ MVC em Node serve os dados, e um frontend Next.js exibe tudo com login, filtros
 por categoria e edição das regras de captura.
 
 ```
-Telegram → Inbox SQLite (VPS) → Bot Python → Supabase → API MVC (Node) → Next.js (Vercel)
-                                              └→ Mídia separada → Supabase Storage
+Telegram → Inbox SQLite (VPS) → Bot Python → Supabase (Postgres/Auth) → API MVC → Next.js
+                                       ├→ Storage (mídias legadas)
+                                       └→ volume local WebP (opt-in) ← API /media
 ```
 
 ## Estrutura
@@ -38,7 +39,7 @@ dealbot/
 │   │   ├── estado.py            # inbox, fronteiras e mídia duráveis em SQLite
 │   │   ├── pipeline.py          # workers limitados: oferta primeiro, foto depois
 │   │   ├── recuperacao.py       # paginação de histórico + refresh de canais
-│   │   ├── midia.py             # adaptador único de Supabase Storage
+│   │   ├── midia.py             # destinos Supabase/local, WebP e publicação segura
 │   │   └── main.py              # loop de eventos do Telethon
 │   ├── gerar_sessao.py          # gera a session string (rode 1x)
 │   └── dealbot.service          # unit do systemd para o VPS
@@ -157,8 +158,8 @@ mais nova. IDs podem ter lacunas. A conclusão de processamento é outro estado.
 - **Oferta primeiro:** mantém extrator/filtros/hash atual e dedup de 48h. Salva
   oferta com foto nula antes de baixar/enviar mídia. Retry reconcilia produto e
   aparições por evento sem limitar a busca a 48h. Depois atualiza a foto pelo
-  mesmo ID. Falha de foto não remove nem esconde oferta. Storage continua no
-  Supabase, isolado em `midia.py`; não há armazenamento definitivo na VPS ainda.
+  mesmo ID. Falha de foto não remove nem esconde oferta. `midia.py` preserva o
+  destino do job: Supabase para legado/padrão e WebP local somente em opt-in.
   Se o upload foi confirmado e falha o vínculo da foto, o checkpoint continua
   recuperável até reconciliar a foto remota ou compensar o objeto conhecido.
   Foto já vinculada é preservada; falha permanente só terminaliza depois dessa
@@ -184,6 +185,107 @@ mídia, 1 executor SQLite (`BOT_IO_WORKERS` aceita somente 1), buffer/página de
 100, mídia até 10MiB, timeout remoto de 10s e de mídia de 30s. Intervalos e
 valores devem ser positivos/finitos e o lote de recuperação não pode exceder o buffer. Não há
 task de processamento por mensagem nem consulta de filtros por mensagem.
+
+### Mídia local e painel autoatualizável (etapa 4)
+
+O padrão permanece `BOT_MIDIA_MODO=supabase`. Com `BOT_MIDIA_MODO=local`, novos
+jobs persistem no SQLite v7 uma chave aleatória de 32 hexadecimais mais `.webp`
+e o destino `local` **antes** de baixar a foto. Jobs v6/anteriores sem destino,
+e jobs já pendentes, ficam em Supabase mesmo que a configuração mude. Voltar o
+modo de escrita para Supabase não migra/apaga fotos locais: mantenha
+`MIDIA_LOCAL_DIR`, a rota `/media` e a limpeza dual enquanto houver referências
+locais.
+
+Pillow é fixado em `Pillow==12.0.0`. A entrada local aceita somente JPEG, PNG e
+WebP estáticos reais: até 10 MiB, 24 milhões de pixels, miniatura sem upscale de
+até 960 px e até 350 KiB WebP. Conversão/disco usam um executor limitado separado
+do SQLite; final é publicado sem substituição por temporário no mesmo filesystem.
+Metadados de entrada não acompanham o WebP. Arquivo inválido é terminal apenas
+para a mídia; falha de I/O permanece recuperável e nunca oculta oferta/CTA.
+
+`MIDIA_LOCAL_DIR` é um caminho absoluto dedicado, fora de código, `.env` e
+`BOT_STATE_DIR`. Na preparação operacional futura da etapa 5, bot e API devem
+usar somente um grupo confiável, por exemplo diretório `2770` com setgid e finais
+`0640`; a API precisa ler/remover finais, mas nunca o SQLite do bot. Não crie,
+monte ou publique esse volume por esta etapa. Temporários reconhecidos têm no
+mínimo 24 h e limpeza limitada. O cursor/raiz ancorada continuam entre ciclos,
+sem reexaminar sempre o prefixo; EOF, erro e fechamento liberam os recursos.
+O cursor é volátil no reinício; a nova instância recomeça e avança por seus ciclos.
+Finais só saem após a reserva/confirmacão remota existente. Monitore espaço e
+backup na etapa 5 — não há eviction automática.
+
+No Linux alvo, operações de mídia usam handles de diretório por componente,
+`O_NOFOLLOW` e filhos relativos à raiz aberta; publicação pelo inode escrito usa
+`/proc/self/fd` (procfs precisa estar disponível). Não há fallback inseguro se o
+ambiente não oferecer essa capacidade. O adaptador do bot no Windows prende os
+ancestrais por handles e rejeita reparse points; os ensaios Windows não substituem
+os testes Linux da API nem a revisão de ACL/permissões operacionais.
+
+A API serve apenas `GET`/`HEAD /media/<chave>.webp` fora de `/api`, sem Auth,
+listagem, upload ou escrita HTTP. Ela abre apenas final regular com chave
+canônica; respostas válidas usam `image/webp`, `nosniff` e `Cache-Control:
+public, max-age=3600`; ausência/inválido usa `no-store`. A lista e estatísticas
+autenticadas usam `no-store`. URLs locais são relativas (`/media/...`) e o
+frontend as resolve na origem da API; URLs absolutas antigas do Storage continuam
+inalteradas. A CSP permite só a origem exata da API e a origem legada Supabase.
+
+O painel consulta lista a cada 5 s e estatísticas a cada 30 s enquanto a aba está
+visível e a sessão é válida. Há timeout de 10 s, cancelamento/gerações para
+filtro/sessão, recuo por endpoint e `Retry-After` compartilhado para 429. Uma
+aba normal gera cerca de 14 GET/min; o limite existente é 120/min por IP, logo
+várias abas/usuários no mesmo IP podem receber 429. Último snapshot válido e CTA
+ficam visíveis em falha; o primeiro erro não é apresentado como lista vazia.
+Consultas de credencial atendem lotes fechados de consumidores: um consumidor
+novo não recebe token/erro de uma consulta SDK já iniciada. Lotes seguintes usam
+consulta nova serial, sem acumular consultas pendentes ou cachear tokens entre
+sessões; cancelamento continua impedindo fetch tardio.
+
+Verificação da etapa 4 (somente laboratório local, sem `.env`/serviços reais):
+
+```text
+# Em bot/, Python 3.12 + requirements fixados, Linux para permissões/links/sinais:
+python -B -m unittest discover -s tests -v
+python -m pip check
+# Em backend/, Node 20 (runner SQL exige banco LOCAL VAZIO DESCARTÁVEL):
+node --test
+npm run test:sql:etapa3
+# Em frontend/, Node 20 e variáveis NEXT_PUBLIC_* fictícias:
+node --test
+npm run lint
+npx --no-install tsc --noEmit --incremental false
+npm run build
+```
+
+O runner SQL conserva os 47 grupos históricos e acrescenta 20 grupos da etapa 4
+com duas conexões PostgreSQL reais, URLs locais/legadas e arquivos sintéticos.
+Não use um banco preenchido ou remoto; suas guardas recusam essa configuração.
+`backend/tests/laboratorio-etapa4.local.mjs` é uma ponte **exclusiva de testes**:
+exige `DEALBOT_LAB_PYTHON` absoluto (venv com Pillow) e `DEALBOT_LAB_BASE` temporário,
+inicia somente em `127.0.0.1:54328` e aciona `bot/laboratorio_etapa4.py`. Usa pipeline,
+SQLite, transformação, arquivos, model/service e HTTP reais, com Telegram/RPCs,
+PostgREST e Auth **falsos explicitamente**; não prova isolamento SQL por si só.
+Nunca compõe a aplicação produtiva nem deve ser publicada. Os scripts
+`frontend/tests/browser-etapa4*.local.js` são funções para o harness Playwright
+(`browser_run_code_unsafe`, parâmetro `filename`), não novos endpoints da UI.
+Use uma aba/contexto exclusivo e Next local em `127.0.0.1:54327`, API pública
+fictícia apontando para `http://127.0.0.1:54328/api`. O primeiro script prepara
+sessão/dados sintéticos e comprova CTA/cópia antes de liberar a mídia. O script
+de layout recebe `window.__largurasQA=[largura]` (uma chamada por largura); o de
+medições registra duas inserções por chamada até completar dez. Preserve os
+resultados/falhas no PRD; encerre os processos do laboratório ao terminar. Nenhum
+desses testes autoriza coleta real, credenciais, alteração de serviços ou deploy.
+
+Validação final está no [PRD da etapa 4, seção 25](docs/sdd/incrementos/dealbot-etapa-04-midia-local-painel-autoatualizavel.md#25-validação-formal-de-encerramento--1611):
+SQL concorrente, QA/medições e preparo do ambiente concluídos. Matrizes completas
+anteriores do bot: Linux 471 aprovados/1 skip Windows e Windows 451/21 skips POSIX,
+zero erros/falhas. V-006 (credencial antiga) e V-007 (continuação da limpeza) foram
+corrigidos: frontend 44 testes/lint/tipos/build aprovados; foco POSIX de mídia
+28 aprovados/1 skip Windows, incluindo sete testes novos. Não se declara a suíte
+completa ampliada do bot reexecutada. A causa dos watchdogs históricos permanece
+inconclusiva, sem atribuição à máquina ou novo gate extra. A etapa 4 foi concluída
+localmente em 16/11, após conferência das fontes/evidências e novas aprovações das
+duas reproduções originais. Não há autorização de deploy: volume persistente,
+permissões produtivas, proxy/TLS, backup e implantação controlada são da etapa 5.
 
 O transporte Telethon 1.36.0 usa despacho sequencial e uma fila de updates
 limitada, com adaptação interna pequena coberta por teste de contrato. Overflow
@@ -288,6 +390,22 @@ Os controles de refresh em `python -m unittest tests.test_progresso_configuracao
 usam barreiras de eventos, dois workers e SQLite real para exercitar janelas de
 notificação/SELECT/commit. Não reproduzem nem explicam o timeout histórico.
 
+Na etapa 4, o laboratório usa CPython 3.12 portátil no Windows e um venv privado
+no filesystem Linux, dependências fixadas e snapshots seletivos por SHA-256.
+Resultados por caso e conclusão ficam fora do projeto, sem depender de uma
+conexão longa ao executor. Não há instalação global nem reconfiguração de serviços.
+Os caminhos, comandos, tentativas e resultados completos estão na seção 19 do PRD.
+Esse preparo não comprova a causa dos watchdogs anteriores nem dispensa o gate.
+
+A regressão revelou também uma janela real no encerramento: um claim já
+confirmado podia perder seu resultado ao cancelar o worker. Aquisição e devolução
+agora são protegidas e drenadas, inclusive sob cancelamentos repetidos e durante
+o tratamento de erro. Há no máximo uma auxiliar de controle pendente por worker,
+sem fan-out de mensagens ou nova concorrência SQLite. Falha de persistência
+continua fatal; o prazo gracioso não autoriza abandonar I/O em curso. Os testes
+de `tests.test_retomada_midia_local` usam barreiras determinísticas e SQLite real;
+não atribuem essa janela aos watchdogs históricos sem evidência.
+
 ### 4. Backend
 ```bash
 cd backend
@@ -308,10 +426,13 @@ A `NEXT_PUBLIC_API_URL` deve apontar para a URL pública do backend no VPS.
 
 ## Endpoints da API
 
-Todas exigem `Authorization: Bearer <jwt>`, exceto `/health`.
+Todas exigem `Authorization: Bearer <jwt>`, exceto `/health` e a leitura pública
+imutável de mídia local.
 
 ```
 GET    /api/health
+GET    /media/<32-hex>.webp
+HEAD   /media/<32-hex>.webp
 GET    /api/produtos?categoria=eletronicos
 GET    /api/produtos/estatisticas
 GET    /api/produtos/:id
@@ -642,7 +763,8 @@ aliases são persistentes e não podem ciclar. Jobs/mídia resolvem ID antigo.
 Remoção de objeto conhecido exige reserva transacional que impeça novo vínculo,
 além de confirmação retomável após Storage. Não há varredura geral de bucket.
 
-Estado local evolui aditivamente à v6. Eventos v2 só são elegíveis para limpeza
+Estado local evolui aditivamente à v7. A v7 acrescenta somente
+`midias.destino`, com default `supabase`; eventos v2 só são elegíveis para limpeza
 local depois do ack remoto; este só ocorre quando oferta, mídia/compensação e
 enriquecimento estão terminais. Referências recuperáveis remotas não expiram só
 porque passaram 48h. Retenção normal compacta é 7 dias após terminalização/ack;
@@ -706,7 +828,7 @@ futura autorizada e com backup/escritores antigos pausados, reaplicar o bloco
 Ele acrescenta somente o índice de expressão de cópia e o comparador invoker
 `_oferta_equivalentes`, com grants restritos, e substitui as RPCs no mesmo bloco
 transacional. Há16 funções/auxiliares ao final. Não acrescenta confiança às linhas
-antigas nem recalcula hashes, apaga dados ou muda o SQLite v6. Os payloads v2
+antigas nem recalcula hashes, apaga dados ou muda o SQLite v7. Os payloads v2
 congelados sem cópia continuam aceitos. Não executar o bot revisado sobre as RPCs
 anteriores: elas não conhecem cópias nem a correção temporal. Rollback segue a
 regra de pausar e preservar schema/fila, sem bot/limpador antigo sobre dados novos.

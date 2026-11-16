@@ -1,3 +1,5 @@
+import { chaveLocalDaUrl, MidiaLocalModel } from "./midia-local.model.js";
+
 const BUCKET = "produtos";
 
 function chaveStorage(fotoUrl, supabaseUrl) {
@@ -23,7 +25,8 @@ function chaveStorage(fotoUrl, supabaseUrl) {
 
 export function criarLimpezaModel(obterCliente = async () =>
   (await import("../config/supabase.js")).supabaseAdmin,
-  obterSupabaseUrl = async () => (await import("../config/env.js")).env.supabaseUrl) {
+  obterSupabaseUrl = async () => (await import("../config/env.js")).env.supabaseUrl,
+  midiaLocal = MidiaLocalModel) {
   return {
     async prepararLote({ retencaoHoras, retencaoDias, lote }) {
       const cliente = await obterCliente();
@@ -53,6 +56,11 @@ export function criarLimpezaModel(obterCliente = async () =>
     },
 
     async apagarFoto(url) {
+      const chaveLocal = chaveLocalDaUrl(url);
+      if (chaveLocal) {
+        await midiaLocal.apagarChave(chaveLocal);
+        return;
+      }
       // Só chaves conhecidas deste projeto/bucket. Nunca lista nem varre Storage.
       const chave = chaveStorage(url, await obterSupabaseUrl());
       const cliente = await obterCliente();

@@ -9,7 +9,7 @@ from .cache import CacheFiltros
 from .config import Config, obrigatoria
 from .db import criar_cliente, fechar_cliente
 from .estado import EstadoLocal
-from .midia import ArmazenamentoSupabase
+from .midia import ArmazenamentoLocal, ArmazenamentoSupabase, ArmazenamentosMidia
 from .modelos import FalhaLocal
 from .observabilidade import log, motivo_erro
 from .pipeline_identidade import PipelineIdentidade as Pipeline
@@ -137,6 +137,9 @@ async def manutencao(estado: EstadoLocal, pipeline: Pipeline, config: Config) ->
             antes = time.time() - config.retencao_dias * 86400
         try:
             removidos, continuar = await limpar_ciclo(estado, config, antes)
+            limpar_temporarios = getattr(getattr(pipeline, "armazenamento", None), "limpar_temporarios", None)
+            if limpar_temporarios:
+                await limpar_temporarios()
             # O mesmo instante/cutoff governa toda a drenagem, inclusive cache.
             await estado.limpar_enriquecimentos(antes, antes + config.retencao_dias * 86400, config.limpeza_lote)
             log("estado_local", removidos=removidos, continuar=continuar, cutoff=antes,
@@ -250,8 +253,18 @@ async def main() -> None:
                 sequential_updates=True, flood_sleep_threshold=0, request_retries=0,
                 raise_last_call_error=True, timeout=config.rede_timeout)
             limitar_updates(client, config.buffer_max, sobrecarga)
-            await servir(client, estado, RepositorioSupabase(remoto, config.rede_timeout),
-                         ArmazenamentoSupabase(remoto, config.midia_timeout), config, parar, sobrecarga)
+            supabase_midia = ArmazenamentoSupabase(remoto, config.midia_timeout)
+            local_midia = (ArmazenamentoLocal(config.midia_local_dir, max_entrada=config.midia_max_bytes,
+                max_pixels=config.midia_max_pixels, lado_max=config.midia_lado_max,
+                max_saida=config.midia_saida_max_bytes, workers=config.midia_transform_workers)
+                if config.midia_local_dir is not None else None)
+            armazenamento = ArmazenamentosMidia(supabase_midia, local_midia)
+            try:
+                await armazenamento.preparar()
+                await servir(client, estado, RepositorioSupabase(remoto, config.rede_timeout),
+                             armazenamento, config, parar, sobrecarga)
+            finally:
+                await armazenamento.fechar()
         finally:
             try:
                 if remoto is not None:

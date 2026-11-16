@@ -3,6 +3,7 @@
 // DEALBOT_TEST_POSTGRES_URL=postgresql://postgres@127.0.0.1:55439/dealbot_teste_etapa3
 // DEALBOT_TEST_POSTGRES_DISPOSABLE=SIM
 // DEALBOT_TEST_PSQL=caminho absoluto opcional para psql (Windows fora do PATH).
+// DEALBOT_TEST_SQL_ARTIFACTS=diretório temporário absoluto opcional para arquivos etapa 4.
 // O banco fica com fixtures para inspeção; não apaga banco/schema/cluster.
 // Alternativa DEALBOT_TEST_PGLITE_MODULE absoluta: DDL/semântica SOMENTE, exit 2;
 // nunca equivale à prova de concorrência PostgreSQL de sessões independentes.
@@ -13,6 +14,7 @@ import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as esperar } from "node:timers/promises";
 import { validarRevisao3, validarRevisao3Concorrente } from "./sql-revisao3.local.mjs";
+import { validarEtapa4Concorrente } from "./sql-etapa4.local.mjs";
 
 const endereco = process.env.DEALBOT_TEST_POSTGRES_URL;
 const modulo = process.env.DEALBOT_TEST_PGLITE_MODULE;
@@ -939,6 +941,9 @@ try {
     assert.equal(await contar("oferta_midias","url='https://midia.invalid/sobra.jpg'"),0);
     ok("aliases e tombstones confirmados expiram após retenção, nunca com referência recuperável");
     console.log(`SQL etapa 3: ${aprovados} grupos aprovados em PostgreSQL real; banco sintético preservado para inspeção.`);
+    const historicos = aprovados;
+    await validarEtapa4Concorrente({ ...revisao3, disputar });
+    console.log(`SQL etapa 4: ${aprovados - historicos} grupos adicionais aprovados; total ${aprovados}, sem PGlite.`);
   } else {
     console.error(`SQL etapa 3: ${aprovados} grupos DDL/semântica aprovados em PGlite. CONCORRÊNCIA IMPEDIDA, não validada.`);
     process.exitCode = 2;
