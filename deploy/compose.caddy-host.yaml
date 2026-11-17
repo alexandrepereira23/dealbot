@@ -1,0 +1,10 @@
+# Somente para Caddy no host. A rede proxy continua privada ao projeto neste modo.
+services:
+  api:
+    ports: ["127.0.0.1:${API_LOOPBACK_PORT:-13333}:3333"]
+  painel:
+    ports: ["127.0.0.1:${PAINEL_LOOPBACK_PORT:-13000}:3000"]
+networks:
+  proxy:
+    external: false
+    name: dealbot-proxy-host

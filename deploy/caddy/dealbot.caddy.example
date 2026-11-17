@@ -1,0 +1,13 @@
+# Trecho a integrar ao Caddy EXISTENTE. Não substituir seu Caddyfile.
+# Variáveis são do ambiente do processo Caddy, não do Compose do Dealbot.
+# Docker: upstreams dealbot-api:3333 e dealbot-painel:3000 na rede compartilhada.
+# Host: upstreams 127.0.0.1:13333 e 127.0.0.1:13000.
+{$DEALBOT_DOMAIN} {
+    @backend path /api /api/* /media /media/*
+    handle @backend {
+        reverse_proxy {$DEALBOT_API_UPSTREAM}
+    }
+    handle {
+        reverse_proxy {$DEALBOT_PAINEL_UPSTREAM}
+    }
+}

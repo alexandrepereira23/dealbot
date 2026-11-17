@@ -1,11 +1,13 @@
 // Requer psql e banco LOCAL DESCARTÁVEL vazio chamado dealbot_teste (ou dealbot_teste_*).
 // Ex.: DEALBOT_TEST_POSTGRES_URL=postgresql://localhost:5432/dealbot_teste npm run test:sql
 // Não lê .env. Tudo fica em transações com rollback, inclusive DDL/fixtures sintéticas.
+// Driver pg absoluto opcional: DEALBOT_TEST_PG_MODULE e DISPOSABLE=SIM, como etapa 3.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
+import { driverPostgres } from "./postgres-driver.local.mjs";
 
 const endereco = process.env.DEALBOT_TEST_POSTGRES_URL;
 // Alternativa sem servidor: módulo PGlite instalado em pasta temporária, não
@@ -22,6 +24,11 @@ if (url && (!["postgres:", "postgresql:"].includes(url.protocol)
   throw new Error("Teste SQL recusa host remoto, parâmetros e banco que não seja dealbot_teste[_sufixo].");
 }
 let db;
+let pg;
+if (endereco && process.env.DEALBOT_TEST_PG_MODULE) {
+  const Sessao = await driverPostgres();
+  pg = new Sessao(endereco);
+}
 if (moduloLocal) {
   if (!isAbsolute(moduloLocal)) throw new Error("PGlite deve ser um caminho local absoluto, não URL remota.");
   const { PGlite } = await import(pathToFileURL(moduloLocal).href);
@@ -39,6 +46,7 @@ const tabelaLegada = `create table public.filtros (
 );`;
 
 async function executar(sql) {
+  if (pg) return pg.exec(sql);
   if (db) return db.exec(sql);
   const resultado = spawnSync("psql", ["-X", "-v", "ON_ERROR_STOP=1", "--dbname", endereco],
     { input: sql, encoding: "utf8" });
@@ -120,4 +128,5 @@ rollback;`);
 console.log("SQL etapa 2: aplicação dupla, preservação, defaults, constraints e preflight aprovados em Postgres local.");
 } finally {
   if (db) await db.close();
+  if (pg) await pg.close();
 }

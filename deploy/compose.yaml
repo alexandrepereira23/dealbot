@@ -1,0 +1,109 @@
+name: dealbot
+
+x-processo: &processo
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+  logging:
+    driver: local
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  api:
+    <<: *processo
+    image: dealbot-api:${DEALBOT_SHA:?Defina o SHA candidato}
+    build:
+      context: ../backend
+      args:
+        API_UID: ${API_UID:-10002}
+        MEDIA_GID: ${MEDIA_GID:-10000}
+    user: "${API_UID:-10002}:${MEDIA_GID:-10000}"
+    env_file:
+      - path: ${API_ENV_FILE:?Defina o arquivo privado da API}
+        format: raw
+    environment:
+      NODE_ENV: production
+      PORT: "3333"
+      HOST: 0.0.0.0
+      MIDIA_LOCAL_DIR: /data/media
+      MIDIA_SAIDA_MAX_BYTES: ${MIDIA_SAIDA_MAX_BYTES:-358400}
+      LIMPEZA_ATIVA: ${LIMPEZA_ATIVA:-false}
+    volumes:
+      - type: bind
+        source: ${MEDIA_HOST_DIR:?Defina o diretório de mídia}
+        target: /data/media
+        bind: { create_host_path: false }
+    networks:
+      servicos: {}
+      proxy: { aliases: [dealbot-api] }
+    stop_grace_period: 40s
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3333/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  bot:
+    <<: *processo
+    image: dealbot-bot:${DEALBOT_SHA:?Defina o SHA candidato}
+    build:
+      context: ../bot
+      args:
+        BOT_UID: ${BOT_UID:-10001}
+        MEDIA_GID: ${MEDIA_GID:-10000}
+    user: "${BOT_UID:-10001}:${MEDIA_GID:-10000}"
+    env_file:
+      - path: ${BOT_ENV_FILE:?Defina o arquivo privado do bot}
+        format: raw
+    environment:
+      BOT_STATE_DIR: /data/state
+      BOT_MIDIA_MODO: local
+      MIDIA_LOCAL_DIR: /data/media
+      BOT_MIDIA_SAIDA_MAX_BYTES: ${MIDIA_SAIDA_MAX_BYTES:-358400}
+      BOT_SHUTDOWN_TIMEOUT_S: "25"
+    volumes:
+      - type: bind
+        source: ${STATE_HOST_DIR:?Defina o diretório privado do estado}
+        target: /data/state
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${MEDIA_HOST_DIR:?Defina o diretório de mídia}
+        target: /data/media
+        bind: { create_host_path: false }
+    networks: [servicos]
+    stop_signal: SIGTERM
+    stop_grace_period: 90s
+    # Sem depends_on que iniciaria o coletor durante o preflight da API.
+
+  painel:
+    <<: *processo
+    image: dealbot-painel:${DEALBOT_SHA:?Defina o SHA candidato}
+    build:
+      context: ../frontend
+      args:
+        FRONTEND_UID: ${FRONTEND_UID:-10003}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?Defina URL pública Supabase}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:?Defina chave pública Supabase}
+        NEXT_PUBLIC_API_URL: /api
+        NEXT_PUBLIC_POLLING_LISTA_MS: ${NEXT_PUBLIC_POLLING_LISTA_MS:-5000}
+        NEXT_PUBLIC_POLLING_STATS_MS: ${NEXT_PUBLIC_POLLING_STATS_MS:-30000}
+    user: "${FRONTEND_UID:-10003}:${FRONTEND_UID:-10003}"
+    networks:
+      proxy: { aliases: [dealbot-painel] }
+    stop_grace_period: 30s
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+networks:
+  servicos: {}
+  proxy:
+    external: true
+    name: ${CADDY_NETWORK:?Defina a rede existente do proxy}

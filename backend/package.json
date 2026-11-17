@@ -3,13 +3,15 @@
   "version": "1.0.0",
   "description": "API MVC do Dealbot",
   "type": "module",
+  "engines": { "node": ">=24 <25" },
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
     "test:sql": "node tests/sql-etapa2.local.mjs",
-    "test:sql:etapa3": "node tests/sql-etapa3.local.mjs"
+    "test:sql:etapa3": "node tests/sql-etapa3.local.mjs",
+    "preflight": "node src/preflight.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
@@ -19,6 +21,6 @@
     "express-rate-limit": "^7.4.0",
     "helmet": "^8.0.0",
     "ws": "^8.18.0",
-    "zod": "^3.23.8"
+    "zod": "4.6.7"
   }
 }

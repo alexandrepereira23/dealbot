@@ -13,3 +13,8 @@ venv/
 *.sqlite3-*
 coletor.lock
 .dealbot-state/
+/deploy/env/*.env
+/deploy/lab/.runtime/
+*.dump
+*.tar.gz
+*.tsbuildinfo

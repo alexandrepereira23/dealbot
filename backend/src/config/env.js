@@ -17,6 +17,14 @@ function inteiroPositivo(chave, padrao, maximo, minimo = 1) {
   return valor;
 }
 
+function booleano(chave, padrao) {
+  const valor = process.env[chave] ?? String(padrao);
+  if (valor !== "true" && valor !== "false") {
+    throw new Error(`Variável de ambiente inválida: ${chave}`);
+  }
+  return valor === "true";
+}
+
 function diretorioAbsolutoOpcional(chave) {
   const valor = process.env[chave];
   if (!valor) return null;
@@ -45,6 +53,7 @@ function resolverCorsOrigin() {
 export const env = {
   nodeEnv,
   port: process.env.PORT || 3333,
+  host: process.env.HOST || "0.0.0.0",
   supabaseUrl: obrigatorio("SUPABASE_URL"),
   supabaseServiceKey: obrigatorio("SUPABASE_SERVICE_KEY"),
   supabaseAnonKey: obrigatorio("SUPABASE_ANON_KEY"),
@@ -52,6 +61,7 @@ export const env = {
   retencaoHoras: inteiroPositivo("RETENCAO_HORAS", 48, 8760),
   retencaoDias: inteiroPositivo("RETENCAO_DIAS", 7, 3650, 7),
   limpezaIntervaloMin: inteiroPositivo("LIMPEZA_INTERVALO_MIN", 60, 10080),
+  limpezaAtiva: booleano("LIMPEZA_ATIVA", true),
   limpezaLote: inteiroPositivo("LIMPEZA_LOTE", 100, 500),
   limpezaMaxLotes: inteiroPositivo("LIMPEZA_MAX_LOTES", 10, 100),
   midiaLocalDir: diretorioAbsolutoOpcional("MIDIA_LOCAL_DIR"),

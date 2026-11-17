@@ -1,28 +1,28 @@
 import { criarApp } from "./app.js";
 import { env } from "./config/env.js";
 import { executarLimpeza } from "./services/limpeza.service.js";
+import { agendarLimpeza } from "./services/agendamento-limpeza.service.js";
 
 const app = criarApp();
 
-const server = app.listen(env.port, () => {
+const server = app.listen(env.port, env.host, () => {
   console.log(`API do Dealbot rodando na porta ${env.port}`);
 });
 
-const bootTimer = setTimeout(executarLimpeza, 10_000);
-const intervalTimer = setInterval(
-  executarLimpeza,
-  env.limpezaIntervaloMin * 60_000,
-);
-console.log(
-  `[limpeza] agendada: retenção=${env.retencaoHoras}h intervalo=${env.limpezaIntervaloMin}min`,
-);
+const limpeza = agendarLimpeza({ ativa: env.limpezaAtiva,
+  intervaloMin: env.limpezaIntervaloMin }, executarLimpeza);
 
-function encerrar(sinal) {
+let encerrando = false;
+async function encerrar(sinal) {
+  if (encerrando) return;
+  encerrando = true;
   console.log(`[server] recebido ${sinal}, encerrando...`);
-  clearTimeout(bootTimer);
-  clearInterval(intervalTimer);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 10_000).unref();
+  setTimeout(() => process.exit(1), 25_000).unref();
+  await Promise.all([
+    new Promise(resolve => server.close(resolve)),
+    limpeza.encerrar(),
+  ]);
+  process.exit(0);
 }
 
 process.on("SIGTERM", () => encerrar("SIGTERM"));

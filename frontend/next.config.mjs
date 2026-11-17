@@ -18,7 +18,7 @@ const apiOrigin = origemDe(apiUrl);
 
 const csp = [
   "default-src 'self'",
-  // Next 14 injeta scripts inline; sem nonce, precisamos de 'unsafe-inline'.
+  // O App Router injeta scripts inline; sem nonce, precisamos de 'unsafe-inline'.
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
@@ -44,6 +44,7 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**" }],
   },

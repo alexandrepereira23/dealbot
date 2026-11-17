@@ -1,0 +1,9 @@
+**
+!requirements.lock
+!src/
+!src/**
+!tests/
+!tests/**
+!simulacao.py
+!simulacao_identidade.py
+!cenarios_identidade.py

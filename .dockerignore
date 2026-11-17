@@ -1,0 +1,16 @@
+# Contexto exclusivo do executor SQL local; imagens de produção têm allowlists próprias.
+**
+!backend/
+!backend/package.json
+!backend/package-lock.json
+!backend/src/
+!backend/src/**
+!backend/tests/
+!backend/tests/**
+!supabase/
+!supabase/schema.sql
+!deploy/
+!deploy/schema-inventario.sql
+!deploy/lab/
+!deploy/lab/sql-compose.sh
+!deploy/lab/Dockerfile.sql

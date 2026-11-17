@@ -13,6 +13,18 @@ Telegram → Inbox SQLite (VPS) → Bot Python → Supabase (Postgres/Auth) → 
 
 ## Estrutura
 
+### Preparação para VPS (etapa 5)
+
+Dockerfiles e `deploy/compose.yaml` preparam bot, API e painel na VPS, com o Caddy
+existente e Supabase gerenciado. A configuração usa Node 24 LTS/Next 16, estado
+privado do bot e mídia WebP compartilhada. A limpeza pode ser suspensa com
+`LIMPEZA_ATIVA=false` antes da prontidão.
+
+Consulte o [guia de deploy, backup, virada e rollback](docs/deploy-vps.md) e as
+[evidências/pendências](docs/sdd/incrementos/dealbot-etapa-05-deploy-migracao-vps.md).
+Build/recriação em Docker Linux ainda precisam de daemon disponível; esta
+preparação não representa um deploy executado ou liberação de produção.
+
 ```
 dealbot/
 ├── supabase/schema.sql          # rode no SQL Editor do Supabase

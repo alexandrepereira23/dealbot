@@ -108,6 +108,8 @@ export default function Home() {
     if (!autenticado || !visivel) {
       if (!autenticado) {
         listaRecebidaRef.current = false;
+        // Limpar dados protegidos imediatamente ao invalidar a sessão.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setListaRecebida(false);
         setProdutos([]);
         setStats(null);

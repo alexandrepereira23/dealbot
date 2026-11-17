@@ -27,6 +27,9 @@ export default function FiltrosPage() {
   }, []);
 
   useEffect(() => {
+    // A consulta externa inicia ao concluir a autenticação; carregar também
+    // sinaliza o início síncrono dessa requisição na interface existente.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!authCarregando) carregar();
   }, [authCarregando, carregar]);
 

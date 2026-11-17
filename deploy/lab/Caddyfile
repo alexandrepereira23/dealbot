@@ -1,0 +1,15 @@
+{
+    admin off
+    auto_https disable_redirects
+    skip_install_trust
+}
+https://localhost:{$LAB_HTTPS_PORT:8443} {
+    tls internal
+    @backend path /api /api/* /media /media/*
+    handle @backend {
+        reverse_proxy {$LAB_API_UPSTREAM:api:3333}
+    }
+    handle {
+        reverse_proxy {$LAB_PAINEL_UPSTREAM:painel:3000}
+    }
+}
