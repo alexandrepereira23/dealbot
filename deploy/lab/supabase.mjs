@@ -1,19 +1,33 @@
 // Fronteira HTTP SINTÉTICA. Não valida SQL/RLS, assinatura JWT ou Telegram reais.
 // Não é copiada para imagens de produção. Sem env de credenciais e sem rede externa.
 import http from "node:http";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 const porta = Number(process.env.LAB_SUPABASE_PORT || 54329);
 const origem = process.env.LAB_ORIGIN || "https://localhost:18443";
 const usuario = { id: "00000000-0000-0000-0000-000000000905", email: "lab@example.invalid", aud: "authenticated", role: "authenticated" };
 const enc = v => Buffer.from(JSON.stringify(v)).toString("base64url");
 const token = `${enc({ alg: "HS256", typ: "JWT" })}.${enc({ sub: usuario.id, exp: 2100000000, role: "authenticated" })}.sintetico`;
 const sessao = { access_token: token, refresh_token: "refresh-sintetico", expires_at: 2100000000, expires_in: 3600, token_type: "bearer", user: usuario };
-const cards = [];
-const eventos = [];
-const registrados = new Map();
-const reservas = new Set();
-let fotoLiberada = false;
+const arquivo = process.env.LAB_DADOS;
+let salvo;
+if (arquivo) {
+  try { salvo = JSON.parse(readFileSync(arquivo, "utf8")); }
+  catch (erro) { if (erro.code !== "ENOENT") throw erro; }
+}
+const cards = salvo?.cards ?? [];
+const eventos = salvo?.eventos ?? [];
+const registrados = new Map(cards.map(p => [p.chave_lab, p]));
+const reservas = new Set(salvo?.reservas);
+let fotoAte = salvo?.fotoAte ?? 0;
 let authFalhando = false;
 const webp = Buffer.from("UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v02aAA=", "base64");
+
+function persistir() {
+  if (!arquivo) return;
+  const temporario = `${arquivo}.tmp`;
+  writeFileSync(temporario, JSON.stringify({ cards, eventos, reservas: [...reservas], fotoAte }), { mode: 0o600, flush: true });
+  renameSync(temporario, arquivo);
+}
 
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", origem);
@@ -32,13 +46,20 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/__lab/controle" && req.method === "POST") {
     if (req.headers["x-lab-controle"] !== "sintetico") return json(403, {});
     if (dados.acao === "oferta") eventos.push({ msg: eventos.length + 1, foto: true });
-    else if (dados.acao === "foto") fotoLiberada = true;
-    else if (dados.acao === "auth") authFalhando = Boolean(dados.falhar);
+    else if (dados.acao === "foto") fotoAte = eventos.length;
+    else if (dados.acao === "auth") {
+      authFalhando = Boolean(dados.falhar);
+      return json(200, {});
+    }
     else return json(400, {});
+    persistir();
     return json(200, {});
   }
   if (url.pathname === "/__lab/eventos") return json(200, eventos);
-  if (url.pathname === "/__lab/foto") return json(200, { liberada: fotoLiberada });
+  if (url.pathname === "/__lab/foto") {
+    const msg = Number(url.searchParams.get("msg"));
+    return json(200, { liberada: msg > 0 && msg <= fotoAte });
+  }
   if (url.pathname === "/storage/v1/object/public/produtos/legada.webp") {
     res.writeHead(200, { "Content-Type": "image/webp" }); return res.end(webp);
   }
@@ -59,11 +80,12 @@ const server = http.createServer(async (req, res) => {
       let p = registrados.get(chave);
       const repetido = Boolean(p);
       if (!p) {
-        p = { ...dados.p_produto, id: cards.length + 1, foto_url: null, estado_oferta: "ativa", canonico_id: null,
+        p = { ...dados.p_produto, chave_lab: chave, id: cards.length + 1, foto_url: null, estado_oferta: "ativa", canonico_id: null,
           identidade_versao: 2, criado_em: new Date().toISOString(), data_oferta: e.data_origem,
           expira_em: "2035-01-01T00:00:00Z", canal_origem: "sintetico", canais: ["sintetico"],
           produto_aparicoes: [{ canal_origem: "sintetico", visto_em: e.data_origem }] };
         registrados.set(chave, p); cards.unshift(p);
+        persistir();
       }
       return json(200, [{ id: p.id, status: repetido ? "retomado" : "novo", foto_url: p.foto_url }]);
     }
@@ -72,12 +94,13 @@ const server = http.createServer(async (req, res) => {
     if (nome === "oferta_foto") {
       if (reservas.has(dados.p_url)) return json(200, [{ status: "remocao_reservada" }]);
       if (!p) return json(200, [{ status: "removida" }]);
-      const existente = Boolean(p.foto_url); p.foto_url ||= dados.p_url;
+      const existente = Boolean(p.foto_url);
+      if (!existente) { p.foto_url = dados.p_url; persistir(); }
       return json(200, [{ status: existente ? "existente" : "atualizada" }]);
     }
     if (nome === "midia_reservar_remocao") {
       const permitido = !cards.some(p => p.foto_url === dados.p_url);
-      if (permitido) reservas.add(dados.p_url);
+      if (permitido && !reservas.has(dados.p_url)) { reservas.add(dados.p_url); persistir(); }
       return json(200, [{ permitido }]);
     }
     return json(500, { code: "LAB_RPC_DESCONHECIDA" });

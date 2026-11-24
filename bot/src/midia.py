@@ -143,8 +143,8 @@ class ArmazenamentoLocal:
 
     def _abrir_diretorio(self) -> None:
         with DiretorioMidiaSeguro(self.diretorio, criar=True) as raiz:
-            # Grupo confiável compartilha somente os finais com a API; setgid evita
-            # perder o grupo herdado quando o volume já foi preparado na etapa 5.
+            # O volume preparado deve pertencer ao bot: escrita pelo grupo não
+            # autoriza fchmod. Setgid mantém o grupo compartilhado nos finais.
             if raiz.fd is not None:
                 os.fchmod(raiz.fd, 0o2770)
 

@@ -1,8 +1,11 @@
 # Dealbot na VPS — preparação, virada e rollback
 
-**Estado da entrega:** configuração e ferramentas preparadas; autorização de produção não concedida.
-Consulte [as evidências e pendências da etapa 5](sdd/incrementos/dealbot-etapa-05-deploy-migracao-vps.md).
-O ensaio Docker/Linux ainda depende de daemon disponível. Não tratar o smoke Windows como validação dos containers.
+[Visão geral](../README.md) · [Execução local](uso-local.md) · [Testes](testes.md)
+
+Este guia descreve a implantação em uma VPS com Caddy, incluindo a virada de
+uma instalação existente e o rollback. Antes da virada, execute o
+[ensaio Docker/Linux](testes.md#ensaio-automatizado-dockerlinux). Testes no host
+e `compose config` não substituem esse ensaio.
 
 ## 1. Topologia e inventário obrigatório
 
@@ -61,21 +64,42 @@ No arquivo de interpolação, definir SHA completo, caminhos absolutos e os mesm
 usados no build/runtime. Defaults: bot `10001:10000`, API `10002:10000`, painel `10003:10003`.
 Confirmar que os IDs não conflitam com a administração local.
 
-Criação inicial dos diretórios, somente na preparação autorizada da VPS:
+Crie diretórios **novos e dedicados**, somente na preparação autorizada da VPS.
+Informe os mesmos `BOT_UID`, `MEDIA_GID`, `STATE_HOST_DIR` e `MEDIA_HOST_DIR` do
+arquivo de interpolação; os valores abaixo são exemplos, não um `source` do env.
 
 ```bash
-sudo install -d -m 0700 -o 10001 -g 10000 /srv/dealbot/state
-sudo install -d -m 2770 -o root -g 10000 /srv/dealbot/media
-sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /srv/dealbot/backups
+BOT_UID=10001
+MEDIA_GID=10000
+# Use os caminhos absolutos já definidos na seção 1, ajustados ao inventário.
+sudo install -d -m 0700 -o "$BOT_UID" -g "$MEDIA_GID" -- "$STATE_HOST_DIR"
+sudo install -d -m 2770 -o "$BOT_UID" -g "$MEDIA_GID" -- "$MEDIA_HOST_DIR"
+sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" -- "$BACKUP_DIR"
 ```
 
-Não executar `chown -R` sobre diretórios desconhecidos. Estado migrado deve ter os
-arquivos de SQLite pertencentes ao bot; `EstadoLocal` mantém a raiz em `0700` e
-arquivos privados em `0600`. A API **não monta** esse diretório.
-Mídia usa setgid `2770`; o bot publica finais `0640` herdando grupo `10000`.
-A API precisa de escrita/execução no diretório para remover uma chave após reserva,
-embora a rota HTTP seja apenas GET/HEAD. Não montar mídia como somente leitura na API.
-Ambos usam `358400` bytes de saída; o Compose propaga uma única configuração.
+Se os diretórios **já existem**, pare o coletor e suspenda qualquer limpeza antes
+de ajustar permissões. Depois do backup, confira com `sudo stat -c '%F %a %u:%g %n'`
+e `sudo realpath -e` que os dois caminhos são as raízes dedicadas esperadas (não
+links, ancestrais, outros mounts ou caminhos compartilhados). Só então corrija
+as raízes, se necessário, com os valores do mesmo env:
+
+```bash
+sudo chown -h -- "$BOT_UID:$MEDIA_GID" "$STATE_HOST_DIR" "$MEDIA_HOST_DIR"
+sudo chmod 00700 -- "$STATE_HOST_DIR"
+sudo chmod 02770 -- "$MEDIA_HOST_DIR"
+```
+
+Não use `chown -R`. Em estado migrado, inspecione individualmente os arquivos
+conhecidos do SQLite e do lock; se necessário, ajuste **somente** os regulares
+confirmados nesse volume dedicado, nunca links, com o serviço parado. O estado
+usa `0700` na raiz e `0600` em arquivos privados. A API **não monta** esse
+diretório. No volume de mídia, o **bot é dono** porque precisa executar `fchmod`
+na raiz ao inicializar o armazenamento; escrita pelo grupo não permite isso.
+Setgid `2770` garante o grupo compartilhado (`MEDIA_GID`); o bot publica finais
+`0640`. A API precisa de leitura dos finais e escrita/execução na raiz para
+remover chaves conhecidas após reserva, mas a rota HTTP é só GET/HEAD. Não monte
+mídia como somente leitura na API. O limite de saída padrão é `358400` bytes;
+o Compose propaga a mesma configuração aos dois serviços.
 
 Usar um diretório imutável por SHA, por exemplo `<RELEASE>=/opt/dealbot/releases/<SHA>`.
 Os comandos seguintes pressupõem Bash e execução nessa release:
@@ -283,14 +307,11 @@ expiração e concorrência. Isso não comprova configurações/extensões do Su
 
    ```bash
    dc up -d --no-deps api
-   dc exec -T api node src/preflight.js
    ```
 
-   Código 0 requer token válido fornecido por ambiente privado
-   `DEALBOT_PREFLIGHT_TOKEN`; sem token a CLI retorna 2 e informa Auth não verificado.
-   O token é opcional só para diagnóstico parcial. Não colá-lo no comando/chat/log.
-   Leituras do schema não substituem inventário de RPCs/grants. A CLI não grava nem
-   dispara limpeza e tem prazo de 30 segundos. `/api/health` comprova apenas processo.
+   Rode a [pré-checagem com token](#token-da-pré-checagem) antes de seguir.
+   Leituras do schema não substituem inventário de RPCs/grants. A CLI não grava
+   nem dispara limpeza e tem prazo de 30 segundos. `/api/health` comprova apenas processo.
 6. **Um bot:** `dc up -d --no-deps bot`. Conferir prontidão legada, snapshot válido
    de filtros/canais, ausência de conflito de lock e redução/progresso da fila.
    Filtros indisponíveis não equivalem a configuração vazia. Novas mídias locais,
@@ -306,6 +327,36 @@ O Compose não usa dependência que inicie o bot ao subir a API. Containers do b
 recebem SIGTERM e 90 s; o orçamento interno é 25 s e I/O/checkpoints são drenados.
 API recebe 40 s e aguarda HTTP/ciclo de limpeza até prazo interno de 25 s.
 Saúde degradada por si só não reinicia containers: observar causas antes de intervir.
+
+### Token da pré-checagem
+
+Use um **JWT de acesso válido do usuário do painel** do projeto testado, não a
+chave `anon` ou `service_role`. Execute em terminal Bash privado e interativo
+(Linux ou WSL no Windows), com `dc` já definido e a API em execução. O Compose
+não copia automaticamente as variáveis do host para `exec`: `-e` com o **nome**
+repassa explicitamente o valor exportado. Cole o JWT somente quando solicitado:
+
+```bash
+(
+  set +x
+  unset DEALBOT_PREFLIGHT_TOKEN
+  IFS= read -rs -p 'JWT de acesso do painel: ' DEALBOT_PREFLIGHT_TOKEN || exit 1
+  printf '\n' >&2
+  [[ -n "$DEALBOT_PREFLIGHT_TOKEN" ]] || exit 1
+  export DEALBOT_PREFLIGHT_TOKEN
+  dc exec -T -e DEALBOT_PREFLIGHT_TOKEN api node src/preflight.js
+)
+```
+
+`read -rs` não ecoa o valor; o subshell descarta a variável ao terminar. Não
+grave essa credencial em arquivos, imagens, chat, histórico ou logs de depuração.
+Não a exporte no shell pai nem a configure no ambiente permanente do serviço.
+
+Para **diagnóstico parcial**, use `dc exec -T api node src/preflight.js` sem
+`-e`. Resultado da CLI: **0** com token válido e checagens completas; **2** sem
+token quando as demais checagens passaram (Auth **não** verificado); outro código
+não zero quando falha, inclusive se o token for rejeitado. Só avance a virada com
+resultado 0 e os demais requisitos da janela satisfeitos.
 
 ### Smoke HTTPS
 
@@ -357,6 +408,10 @@ restauração é recuperação separada e pode perder eventos posteriores. Se ne
 binário compatível estiver disponível, manter coletor/limpeza pausados e diagnosticar.
 
 ## 9. Reproduzir laboratório
+
+Para uma demonstração manual sem ferramentas de teste no host, siga o
+[guia local](uso-local.md#modo-a--demonstração-sem-credenciais). Os ensaios
+automatizados abaixo usam apenas ambientes de teste separados.
 
 Sem Docker, `deploy/lab/validar-local.py` copia fontes por allowlist para temporário
 sem `.env`, compila standalone, inicia Caddy HTTPS local, API e pipeline com fronteiras

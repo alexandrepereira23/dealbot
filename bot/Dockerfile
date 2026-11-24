@@ -17,7 +17,7 @@ USER bot
 
 FROM base AS testes
 COPY tests ./tests
-COPY simulacao.py simulacao_identidade.py cenarios_identidade.py ./
+COPY simulacao.py simulacao_identidade.py cenarios_identidade.py previa.py ./
 CMD ["python", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"]
 
 FROM base AS producao

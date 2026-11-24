@@ -35,7 +35,7 @@ class TelegramSintetico:
         self.http = http
 
     async def baixar_foto(self, canal, msg, limite):
-        while not (await self.http.get("/__lab/foto")).json()["liberada"]:
+        while not (await self.http.get("/__lab/foto", params={"msg": msg})).json()["liberada"]:
             await asyncio.sleep(.2)
         imagem = Image.new("RGB", (600, 300), "#2277aa")
         dados = io.BytesIO()
@@ -78,8 +78,9 @@ async def main():
                         if pipeline.fatal.done():
                             raise pipeline.fatal.result()
                         for evento in (await http.get("/__lab/eventos")).json():
+                            asin = f"B0LAB{evento['msg']:05X}"
                             await pipeline.receber(Mensagem(-100905, evento["msg"], "sintetico",
-                                "Notebook sintetico\nR$ 99,90\nhttps://www.amazon.com.br/dp/B0LAB00001",
+                                f"Notebook sintetico\nR$ 99,90\nCupom: LAB10\nhttps://www.amazon.com.br/dp/{asin}",
                                 datetime.now(timezone.utc).isoformat(), evento["foto"]))
                         try:
                             await asyncio.wait_for(parar.wait(), .2)

@@ -63,7 +63,12 @@ class Config:
             # A mídia é compartilhada com a API; estado e código não são. Não
             # permitir igualdade, filho ou pai evita expor SQLite/sessões quando
             # o diretório de mídia recebe grupo 2770 na publicação.
-            raiz_codigo = Path(__file__).resolve().parents[2]
+            raiz_bot = Path(__file__).resolve().parents[1]
+            raiz_codigo = raiz_bot.parent
+            # Na imagem, /app contém só o bot. Seu pai / não é a raiz do
+            # código: os volumes dedicados são montados fora de /app.
+            if raiz_codigo == raiz_codigo.parent:
+                raiz_codigo = raiz_bot
             if any(self._caminhos_sobrepostos(midia, protegido) for protegido in (estado, raiz_codigo)):
                 raise ValueError("MIDIA_LOCAL_DIR deve ser dedicado e não pode sobrepor estado ou código")
         if self.recuperacao_lote > self.buffer_max:

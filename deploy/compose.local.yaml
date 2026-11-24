@@ -1,0 +1,57 @@
+name: dealbot-local
+
+services:
+  preparar:
+    image: python:3.12.16-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+    user: "0:0"
+    read_only: true
+    network_mode: none
+    entrypoint: [python, /scripts/preparar-volumes.py, --bot-uid, "${BOT_UID:-10001}", --media-gid, "${MEDIA_GID:-10000}"]
+    volumes:
+      - estado:/state
+      - midia:/media
+      - backups:/backup
+      - caddy_data:/caddy-data
+      - ./scripts:/scripts:ro
+
+  api:
+    extends: { file: compose.base.yaml, service: api }
+    volumes: ["midia:/data/media"]
+    depends_on:
+      preparar: { condition: service_completed_successfully }
+
+  bot:
+    extends: { file: compose.base.yaml, service: bot }
+    profiles: [coleta]
+    volumes: ["estado:/data/state", "midia:/data/media", "backups:/backup", "./scripts:/scripts:ro"]
+    depends_on:
+      preparar: { condition: service_completed_successfully }
+
+  painel:
+    extends: { file: compose.base.yaml, service: painel }
+
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    user: "10004:10004"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/config:uid=10004,gid=10004,mode=0700"]
+    volumes:
+      - type: volume
+        source: caddy_data
+        target: /data
+        volume: { nocopy: true }
+      - ./caddy/local.Caddyfile:/etc/caddy/Caddyfile:ro
+    ports: ["127.0.0.1:${LOCAL_HTTPS_PORT:-28443}:8443"]
+    depends_on:
+      preparar: { condition: service_completed_successfully }
+      api: { condition: service_started }
+      painel: { condition: service_started }
+
+volumes:
+  estado: {}
+  midia: {}
+  backups: {}
+  caddy_data: {}
